@@ -9,16 +9,9 @@ from github_db import (
     buscar_habit_logs, inserir_habit_log, atualizar_habit_log, deletar_habit_log
 )
 
-# -----------------------------
-# Helpers de estado/carregamento
-# -----------------------------
-def recarregar():
-    st.session_state.habitos = buscar_habitos()
-    st.session_state.habit_logs = buscar_habit_logs()
-
-# -----------------------------
-# Helpers de recorrência semanal
-# -----------------------------
+# ---------------------------------------------
+#  MAPEAMENTOS DE DIAS (PT ↔ CÓDIGO INTERNACIONAL)
+# ---------------------------------------------
 _DIAS_COD_PT = [
     ("seg", "mon"),
     ("ter", "tue"),
@@ -28,57 +21,79 @@ _DIAS_COD_PT = [
     ("sab", "sat"),
     ("dom", "sun"),
 ]
+
 _COD_TO_PT = {code: pt for pt, code in _DIAS_COD_PT}
 _PT_TO_COD = {pt: code for pt, code in _DIAS_COD_PT}
 
+
+# ---------------------------------------------
+#  FUNÇÃO MAIS SEGURA PARA AVALIAR RECORRÊNCIA
+# ---------------------------------------------
 def habito_planejado_para_dia(habit: dict, dia: date) -> bool:
     """
-    Retorna True se o hábito está planejado para o 'dia' informado.
-    - Sem recurrence => diário => True
-    - Com recurrence.type == 'weekly' => verifica se o dia da semana está em recurrence.days
+    Retorna True se o hábito deve aparecer no dia.
+    - Se não tiver 'recurrence' => hábito diário => True
+    - Se recurrence for inválido ou incompleto => tratar como diário
+    - Se tipo for weekly => verifica se o dia está na lista
     """
+
     rec = habit.get("recurrence")
-    if not rec:
-        return True  # hábito diário tradicional
-    rtype = rec.get("type")
+
+    if not rec or not isinstance(rec, dict):
+        return True  # diário ou dado faltando
+
+    rtype = rec.get("type", None)
     if rtype != "weekly":
-        return True  # outros tipos (futuro) tratados como sempre visíveis
-    weekday = dia.weekday()  # mon=0..sun=6
+        return True  # tipos futuros tratados como diário
+
+    dias = rec.get("days", None)
+    if not dias or not isinstance(dias, list):
+        return True  # tratar como diário
+
+    weekday = dia.weekday()  # seg=0 ... dom=6
     mapa = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-    dia_cod = mapa[weekday]
-    return dia_cod in (rec.get("days") or [])
+    return mapa[weekday] in dias
 
+
+# ---------------------------------------------
+#  EXIBIÇÃO AMIGÁVEL DO CAMPO recurrence
+# ---------------------------------------------
 def formatar_recorrencia_pt(rec: dict | None) -> str:
-    """Gera um texto amigável para exibir a recorrência semanal."""
-    if not rec or rec.get("type") != "weekly":
+    if not rec or not isinstance(rec, dict):
         return "Diário"
-    days = rec.get("days") or []
-    if not days:
-        return "Semanal (sem dias)"
-    dias_pt = [k for code in days if (k := _COD_TO_PT.get(code))]
-    # capitaliza primeira letra
-    dias_pt_fmt = ", ".join(d.capitalize() for d in dias_pt)
-    return f"Semanal ({dias_pt_fmt})"
 
+    if rec.get("type") != "weekly":
+        return "Diário"
+
+    dias = rec.get("days", [])
+    if not dias:
+        return "Semanal"
+
+    dias_pt = [_COD_TO_PT.get(code, code) for code in dias]
+    dias_pt = [d.capitalize() for d in dias_pt]
+    return "Semanal (" + ", ".join(dias_pt) + ")"
+
+
+# ---------------------------------------------
+#  WIDGET MULTISELECT PARA RECORRÊNCIA SEMANAL
+# ---------------------------------------------
 def multiselect_dias_semana(label: str, default_codes: list[str] | None, key: str):
-    """
-    Multiselect em PT (seg..dom) que devolve lista de códigos ['mon','wed',...].
-    """
-    default_pt = []
     if default_codes:
-        for code in default_codes:
-            pt = _COD_TO_PT.get(code)
-            if pt:
-                default_pt.append(pt)
+        defaults_pt = [_COD_TO_PT.get(code) for code in default_codes if code in _COD_TO_PT]
+    else:
+        defaults_pt = []
 
     dias_pt = [pt for pt, _ in _DIAS_COD_PT]
-    selecionados_pt = st.multiselect(label, dias_pt, default=default_pt, key=key)
+    selecionados_pt = st.multiselect(label, dias_pt, default=defaults_pt, key=key)
     return [_PT_TO_COD[pt] for pt in selecionados_pt if pt in _PT_TO_COD]
 
-# -----------------------------
-# Render principal da aba Saúde
-# -----------------------------
+
+# ---------------------------------------------
+#  FUNÇÃO PRINCIPAL: RENDERIZAÇÃO DA ABA SAÚDE
+# ---------------------------------------------
 def render_saude():
+
+    # HEADER
     st.markdown("""
       <div class="header-container">
         <div class="main-title">💪 Saúde</div>
@@ -86,233 +101,239 @@ def render_saude():
       </div>
     """, unsafe_allow_html=True)
 
-    # Carrega sessão
+    # -----------------------------
+    # Carregamento inicial
+    # -----------------------------
     if 'habitos' not in st.session_state:
         st.session_state.habitos = buscar_habitos()
+
     if 'habit_logs' not in st.session_state:
         st.session_state.habit_logs = buscar_habit_logs()
 
-    # Controles superiores
+    # -----------------------------
+    # FILTROS SUPERIORES
+    # -----------------------------
     col_d1, col_d2, col_d3 = st.columns([1,1,1])
-    dia_sel = col_d1.date_input("Dia", value=date.today(), key="hb_dia_sel")
-    mostrar_logs_rec = col_d2.selectbox("Histórico de logs", options=["7 dias", "14 dias", "30 dias"], index=1, key="hb_hist_range")
-    mostrar_nao_planejados = col_d3.checkbox("Mostrar hábitos não planejados para o dia", value=False, key="hb_show_all")
+    dia_sel = col_d1.date_input("Dia", value=date.today(), key="saude_dia")
+    mostrar_logs_rec = col_d2.selectbox("Histórico", ["7 dias", "14 dias", "30 dias"], index=1)
+    mostrar_todos = col_d3.checkbox("Mostrar hábitos não planejados para o dia", value=False)
 
     # -----------------------------
-    # Novo hábito (Diário ou Semanal)
+    # FORM: ADICIONAR NOVO HÁBITO
     # -----------------------------
     with st.expander("➕ Novo hábito", expanded=False):
-        with st.form("form_habito", clear_on_submit=True):
-            nome = st.text_input("Nome do hábito (ex.: Beber água / Ir à academia)", key="hb_new_nome")
-            modo = st.radio("Tipo de hábito", ["Diário", "Semanal (recorrência)"], horizontal=True, key="hb_new_tipo")
+        with st.form("form_novo_habito", clear_on_submit=True):
+
+            nome = st.text_input("Nome")
+            modo = st.radio("Tipo", ["Diário", "Semanal (recorrente)"], horizontal=True)
+
             if modo == "Diário":
-                meta = st.number_input("Meta por dia", min_value=0, value=1, step=1, key="hb_new_meta")
-                unidade = st.text_input("Unidade (ex.: copos, km, min)", key="hb_new_unit", value="")
+                meta = st.number_input("Meta por dia", min_value=0, value=1)
+                unidade = st.text_input("Unidade", value="")
                 recurrence = None
             else:
-                st.caption("Selecione os dias da semana para este hábito:")
-                dias_codes = multiselect_dias_semana("Dias da semana", default_codes=["mon","wed","fri"], key="hb_new_days")
-                unidade = st.text_input("Unidade (ex.: vezes, km, min)", key="hb_new_unit2", value="vezes")
-                meta = 0  # desnecessário para semanal
-                recurrence = {"type": "weekly", "days": dias_codes}
+                dias = multiselect_dias_semana("Dias da semana", ["mon","wed","fri"], key="dias_semana_new")
+                unidade = st.text_input("Unidade (ex.: vezes)", value="vezes")
+                meta = 0
+                recurrence = {"type": "weekly", "days": dias}
 
             if st.form_submit_button("Salvar"):
                 if not nome.strip():
-                    st.error("Informe o nome do hábito.")
+                    st.error("Informe o nome.")
                 else:
                     inserir_habito({
                         "name": nome.strip(),
-                        "target_per_day": int(meta),
                         "unit": unidade.strip(),
-                        "recurrence": recurrence  # pode ser None
+                        "target_per_day": int(meta),
+                        "recurrence": recurrence
                     })
                     st.success("Hábito criado!")
-                    recarregar()
+                    st.session_state.habitos = buscar_habitos()
                     st.rerun()
 
     # -----------------------------
-    # Visão diária com progresso
+    # DADOS EM DATAFRAME
     # -----------------------------
-    habitos = st.session_state.habitos or []
-    logs = st.session_state.habit_logs or []
+    df_h = pd.DataFrame(st.session_state.habitos)
+    df_l = pd.DataFrame(st.session_state.habit_logs)
 
-    df_h = pd.DataFrame(habitos)
-    df_l = pd.DataFrame(logs)
-
-    if df_h.empty:
-        # Garante colunas ao menos para evitar KeyError adiante
-        df_h = pd.DataFrame(columns=['id','name','target_per_day','unit','recurrence'])
-
-    # Normaliza colunas esperadas
-    for c, default in [('id', None), ('name', None), ('target_per_day', 0), ('unit', ''), ('recurrence', None)]:
+    # Garantir colunas
+    for c in ["id","name","unit","target_per_day","recurrence"]:
         if c not in df_h.columns:
-            df_h[c] = default
+            df_h[c] = None
 
+    # Logs do dia
     if df_l.empty:
         soma_dia = {}
     else:
-        df_l['date'] = pd.to_datetime(df_l['date'], errors='coerce').dt.date
-        soma_dia = df_l[df_l['date'] == dia_sel].groupby('habit_id')['amount'].sum().to_dict()
+        df_l["date"] = pd.to_datetime(df_l["date"], errors="coerce").dt.date
+        soma_dia = df_l[df_l["date"] == dia_sel].groupby("habit_id")["amount"].sum().to_dict()
+
+    # Ordenar hábitos por nome
+    if "name" in df_h.columns:
+        df_h = df_h.sort_values("name", na_position="last")
 
     st.markdown("### Hoje / Dia selecionado")
 
-    # Ordena por nome (se houver)
-    if 'name' in df_h.columns:
-        df_h = df_h.sort_values('name', na_position='last')
+    algum = False
 
-    algum_mostrado = False
+    # -----------------------------
+    # LISTAGEM DOS HÁBITOS
+    # -----------------------------
     for _, hb in df_h.iterrows():
-        hid = hb.get('id')
-        if pd.isna(hid):
+
+        hid = hb.get("id")
+        if hid is None or pd.isna(hid):
             continue
+
         hid = int(hid)
 
-        # Filtro de recorrência planejada
-        if not mostrar_nao_planejados and not habito_planejado_para_dia(hb, dia_sel):
+        # Verificar recorrência
+        if not mostrar_todos and not habito_planejado_para_dia(hb, dia_sel):
             continue
 
-        algum_mostrado = True
+        algum = True
 
-        alvo = int(hb.get('target_per_day', 0) or 0)
-        unit = hb.get('unit', '') or ''
-        rec = hb.get('recurrence')
+        nome = hb.get("name") or "(sem nome)"
+        unit = hb.get("unit") or ""
+        rec = hb.get("recurrence")
+        alvo = int(hb.get("target_per_day", 0) or 0)
+
         atual = float(soma_dia.get(hid, 0.0))
-        is_semanal = bool(rec and rec.get("type") == "weekly")
+
+        is_semanal = (isinstance(rec, dict) and rec.get("type") == "weekly")
 
         # Progresso
         if is_semanal:
-            # Para hábitos semanais, a métrica do dia é binária (feito hoje? amount > 0)
             progresso = 1.0 if atual > 0 else 0.0
             meta_txt = formatar_recorrencia_pt(rec)
-            feito_txt = "Feito hoje ✅" if atual > 0 else "Não feito hoje"
+            feito_txt = "Feito hoje" if atual > 0 else "Não feito"
         else:
-            # Diário: progresso = atual / meta (se meta > 0)
-            progresso = 0.0 if alvo <= 0 else min(atual / max(alvo, 1), 1.0)
-            meta_txt = f"Meta diária: {alvo} {unit}".strip()
-            feito_txt = f"Feito: {atual:.2f} {unit}".strip()
+            progresso = min(atual / alvo, 1.0) if alvo > 0 else 0.0
+            meta_txt = f"Meta: {alvo} {unit}".strip()
+            feito_txt = f"Feito: {atual:g} {unit}".strip()
 
-        nome_hab = hb.get('name') or "(sem nome)"
         rec_txt = formatar_recorrencia_pt(rec)
 
+        # Card
         st.markdown(f"""
         <div class="habit-card">
-          <div class="habit-left">
-            <div class="habit-icon">🏷️</div>
-            <div class="hb-info">
-              <div class="hb-title">{nome_hab}</div>
-              <div class="hb-meta">{meta_txt} • {feito_txt} • <i>{rec_txt}</i></div>
+            <div class="habit-left">
+                <div class="habit-icon">🏷️</div>
+                <div class="hb-info">
+                    <div class="hb-title">{nome}</div>
+                    <div class="hb-meta">{meta_txt} • {feito_txt} • <i>{rec_txt}</i></div>
+                </div>
             </div>
-          </div>
         </div>
         """, unsafe_allow_html=True)
+
         st.progress(progresso)
 
-        # Ações rápidas
+        # Ações
         c1, c2, c3, c4 = st.columns([1,1,2,2])
+
         with c1:
-            if st.button("+1", key=f"hb_inc_{hid}"):
+            if st.button("+1", key=f"hb_{hid}_plus1"):
                 inserir_habit_log({"habit_id": hid, "date": dia_sel.isoformat(), "amount": 1})
-                recarregar(); st.rerun()
+                st.session_state.habit_logs = buscar_habit_logs()
+                st.rerun()
+
         with c2:
-            val = st.number_input("Qtd.", min_value=0.0, value=0.0, key=f"hb_amt_{hid}")
-            if st.button("Adicionar", key=f"hb_add_{hid}"):
-                if val > 0:
-                    inserir_habit_log({"habit_id": hid, "date": dia_sel.isoformat(), "amount": float(val)})
-                    recarregar(); st.rerun()
+            qtd = st.number_input("Qtd", min_value=0.0, value=0.0, key=f"hb_{hid}_qtd")
+            if st.button("Adicionar", key=f"hb_{hid}_add"):
+                if qtd > 0:
+                    inserir_habit_log({"habit_id": hid, "date": dia_sel.isoformat(), "amount": float(qtd)})
+                    st.session_state.habit_logs = buscar_habit_logs()
+                    st.rerun()
+
         with c3:
-            # Editor completo do hábito, incluindo recorrência
-            with st.expander("Editar Hábito"):
-                nn = st.text_input("Nome", value=nome_hab, key=f"hb_en_{hid}")
-                tipo_atual = "Semanal (recorrência)" if is_semanal else "Diário"
-                tipo_edit = st.radio("Tipo de hábito", ["Diário", "Semanal (recorrência)"], index=0 if not is_semanal else 1, key=f"hb_tipo_{hid}", horizontal=True)
+            with st.expander("Editar"):
+                novo_nome = st.text_input("Nome", value=nome, key=f"hb_{hid}_nome")
+                tipo_edit = st.radio("Tipo", ["Diário", "Semanal (recorrente)"],
+                                     index=0 if not is_semanal else 1,
+                                     key=f"hb_{hid}_tipo")
 
                 if tipo_edit == "Diário":
-                    nt = st.number_input("Meta por dia", min_value=0, value=int(alvo), step=1, key=f"hb_et_{hid}")
-                    nu = st.text_input("Unidade", value=unit, key=f"hb_eu_{hid}")
-                    new_recurrence = None
-                    new_target = int(nt)
-                    new_unit = nu.strip()
+                    novo_alvo = st.number_input("Meta por dia", min_value=0, value=alvo, step=1, key=f"hb_{hid}_meta")
+                    novo_unit = st.text_input("Unidade", value=unit, key=f"hb_{hid}_unit")
+                    novo_recurrence = None
                 else:
-                    # semanal
-                    dias_default = rec.get("days") if is_semanal else []
-                    ndays = multiselect_dias_semana("Dias da semana", default_codes=dias_default, key=f"hb_days_{hid}")
-                    nu = st.text_input("Unidade", value=unit or "vezes", key=f"hb_eu2_{hid}")
-                    new_recurrence = {"type": "weekly", "days": ndays}
-                    new_target = 0
-                    new_unit = (nu or "vezes").strip()
+                    dias_default = rec["days"] if is_semanal else []
+                    new_days = multiselect_dias_semana("Dias da semana", dias_default, key=f"hb_{hid}_days")
+                    novo_unit = st.text_input("Unidade", value=unit or "vezes", key=f"hb_{hid}_unit2")
+                    novo_alvo = 0
+                    novo_recurrence = {"type": "weekly", "days": new_days}
 
-                if st.button("Salvar alter.", key=f"hb_save_{hid}"):
+                if st.button("Salvar", key=f"hb_{hid}_save"):
                     atualizar_habito(hid, {
-                        "name": nn.strip(),
-                        "target_per_day": new_target,
-                        "unit": new_unit,
-                        "recurrence": new_recurrence
+                        "name": novo_nome.strip(),
+                        "unit": novo_unit.strip(),
+                        "target_per_day": novo_alvo,
+                        "recurrence": novo_recurrence
                     })
-                    recarregar(); st.rerun()
+                    st.session_state.habitos = buscar_habitos()
+                    st.rerun()
+
         with c4:
-            st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
-            if st.button("Excluir hábito", key=f"hb_del_{hid}"):
+            if st.button("Excluir", key=f"hb_{hid}_del"):
                 deletar_habito(hid)
-                recarregar(); st.rerun()
-            st.markdown('</div>', unsafe_allow_html=True)
+                st.session_state.habitos = buscar_habitos()
+                st.rerun()
 
         st.markdown("<br>", unsafe_allow_html=True)
 
-    if not algum_mostrado:
-        st.info("Nenhum hábito para exibir com os filtros atuais.")
+    if not algum:
+        st.info("Nenhum hábito para exibir (com os filtros atuais).")
 
+    # -----------------------------
+    # HISTÓRICO DE LOGS
+    # -----------------------------
     st.divider()
 
-    # -----------------------------
-    # Histórico de logs recentes
-    # -----------------------------
-    if not df_l.empty and not df_h.empty:
-        janela_map = {"7 dias": 7, "14 dias": 14, "30 dias": 30}
-        dias = janela_map[mostrar_logs_rec]
-        inicio = date.today() - timedelta(days=dias)
+    df_l = pd.DataFrame(st.session_state.habit_logs)
 
-        df_l['date'] = pd.to_datetime(df_l['date'], errors='coerce').dt.date
-        df_recent = df_l[df_l['date'] >= inicio].copy()
+    if df_l.empty:
+        st.caption("Sem logs registrados.")
+        return
 
-        # Mapa de nomes/unidades por habit_id
-        nomes = {}
-        units = {}
-        for _, h in df_h.iterrows():
-            hid = h.get('id')
-            if pd.isna(hid): 
-                continue
-            hid = int(hid)
-            nomes[hid] = h.get('name') or f"Hábito {hid}"
-            units[hid] = h.get('unit') or ''
+    dias_map = {"7 dias": 7, "14 dias": 14, "30 dias": 30}
+    dias = dias_map[mostrar_logs_rec]
+    inicio = date.today() - timedelta(days=dias)
 
-        st.markdown("### Logs recentes")
-        if df_recent.empty:
-            st.caption("Sem logs nesse período.")
-        else:
-            for _, lg in df_recent.sort_values(by=['date'], ascending=False).iterrows():
-                lid_raw = lg.get('id')
-                if pd.isna(lid_raw):
-                    continue
-                lid = int(lid_raw)
-                h_id = int(lg.get('habit_id')) if pd.notnull(lg.get('habit_id')) else None
-                nome_h = nomes.get(h_id, f"Hábito {h_id}") if h_id is not None else "(sem hábito)"
-                unit_h = units.get(h_id, '')
-                data_txt = lg['date'].strftime('%d/%m/%Y') if pd.notnull(lg['date']) else '—'
-                amount = float(lg.get('amount', 0) or 0)
+    df_l["date"] = pd.to_datetime(df_l["date"], errors="coerce").dt.date
+    df_recent = df_l[df_l["date"] >= inicio].copy()
 
-                st.write(f"📝 {data_txt} • **{nome_h}** — {amount:g} {unit_h}".rstrip())
-                c1, c2, c3 = st.columns([1,1,2])
-                with c1:
-                    novo = st.number_input("Qtd.", min_value=0.0, value=float(amount), key=f"hb_lg_amt_{lid}")
-                with c2:
-                    if st.button("Salvar", key=f"hb_lg_save_{lid}"):
-                        atualizar_habit_log(lid, {"amount": float(novo)})
-                        recarregar(); st.rerun()
-                with c3:
-                    st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
-                    if st.button("Excluir", key=f"hb_lg_del_{lid}"):
-                        deletar_habit_log(lid)
-                        recarregar(); st.rerun()
-                    st.markdown('</div>', unsafe_allow_html=True)
-    else:
-        st.caption("Sem logs para exibir.")
+    if df_recent.empty:
+        st.caption("Sem logs nesse período.")
+        return
+
+    # Mapa de nomes
+    df_h2 = pd.DataFrame(st.session_state.habitos)
+    nomes = {int(r["id"]): r["name"] for _, r in df_h2.dropna(subset=["id"]).iterrows()}
+
+    st.markdown("### Logs recentes")
+
+    for _, lg in df_recent.sort_values("date", ascending=False).iterrows():
+
+        lid = int(lg["id"])
+        hid = int(lg["habit_id"])
+        nome_h = nomes.get(hid, f"Hábito {hid}")
+        data_txt = lg["date"].strftime("%d/%m/%Y")
+        amount = lg["amount"]
+
+        st.write(f"📝 {data_txt} — **{nome_h}** — {amount:g}")
+
+        c1, c2, c3 = st.columns([1,1,2])
+        with c1:
+            novo = st.number_input("Qtd", min_value=0.0, value=float(amount), key=f"lg_{lid}_qtd")
+        with c2:
+            if st.button("Salvar", key=f"lg_{lid}_save"):
+                atualizar_habit_log(lid, {"amount": float(novo)})
+                st.session_state.habit_logs = buscar_habit_logs()
+                st.rerun()
+        with c3:
+            if st.button("Excluir", key=f"lg_{lid}_del"):
+                deletar_habit_log(lid)
+                st.session_state.habit_logs = buscar_habit_logs()
+                st.rerun()
