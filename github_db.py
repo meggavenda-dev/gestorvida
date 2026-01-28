@@ -12,9 +12,9 @@ from datetime import date
 
 GITHUB_API = "https://api.github.com"
 
-# -------------------------------------------------
-# Helpers GitHub (headers, get/put, update seguro)
-# -------------------------------------------------
+# ---------------------------------------------
+#  GITHUB CORE
+# ---------------------------------------------
 def gh_headers() -> Dict[str, str]:
     return {
         "Authorization": f"Bearer {st.secrets['GITHUB_TOKEN']}",
@@ -44,11 +44,11 @@ def gh_get_file(path: str) -> Tuple[Optional[Any], Optional[str]]:
 def gh_put_file(path: str, obj: Any, message: str, sha: Optional[str]) -> Optional[str]:
     owner, repo, branch = gh_repo_info()
     url = f"{GITHUB_API}/repos/{owner}/{repo}/contents/{path}"
-    content_b64 = base64.b64encode(
-        json.dumps(obj, ensure_ascii=False, indent=2).encode("utf-8")
-    ).decode("utf-8")
+    # Garante JSON-serializável
+    content_str = json.dumps(obj, ensure_ascii=False, indent=2)
+    content_b64 = base64.b64encode(content_str.encode("utf-8")).decode("utf-8")
 
-    payload = {"message": message, "content": content_b64, "branch": branch}
+    payload = {"message": message or f"update {path}", "content": content_b64, "branch": branch}
     if sha:
         payload["sha"] = sha
 
@@ -66,9 +66,16 @@ def safe_update_json(
     max_retries: int = 3,
     delay: float = 0.8
 ) -> Tuple[Optional[Any], Optional[str]]:
+    """
+    Lê (obj, sha) -> aplica updater(obj) -> grava com sha -> retry em caso de conflito/falha.
+    """
     for attempt in range(max_retries):
         obj, sha = gh_get_file(path)
-        new_obj = updater(obj)
+        try:
+            new_obj = updater(obj)
+        except Exception as e:
+            st.error(f"[GitHub] updater falhou em {path}: {e}")
+            return None, None
         new_sha = gh_put_file(path, new_obj, commit_message or f"update {path}", sha)
         if new_sha:
             return new_obj, new_sha
@@ -76,9 +83,9 @@ def safe_update_json(
     st.error(f"[GitHub] Não foi possível atualizar {path} após {max_retries} tentativas.")
     return None, None
 
-# -------------------------------------------------
-# Bases por domínio (podem vir dos Secrets)
-# -------------------------------------------------
+# ---------------------------------------------
+#  BASES (podem ser customizadas via secrets)
+# ---------------------------------------------
 FIN_BASE     = st.secrets.get("GITHUB_FIN_BASE",     "data/financeiro")
 TASKS_BASE   = st.secrets.get("GITHUB_TASKS_BASE",   "data/tarefas")
 SAUDE_BASE   = st.secrets.get("GITHUB_SAUDE_BASE",   "data/saude")
@@ -131,7 +138,8 @@ def buscar_dados() -> pd.DataFrame:
 def inserir_transacao(reg: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
-        new_id = (max([int(r.get("id", 0)) for r in obj]) + 1) if obj else 1
+        new_id = (max([int(r.get("id", 0)) for r in obj if isinstance(r, dict)]) + 1) if obj else 1
+        reg = dict(reg)
         reg['id'] = new_id
         obj.append(reg)
         return obj
@@ -141,15 +149,15 @@ def atualizar_transacao(trans_id: int, patch: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
         for r in obj:
-            if int(r.get("id", -1)) == int(trans_id):
-                r.update(patch)
+            if isinstance(r, dict) and int(r.get("id", -1)) == int(trans_id):
+                r.update(dict(patch))
         return obj
     safe_update_json(fin_path("transacoes"), updater, commit_message=f"update transacao {trans_id}")
 
 def deletar_transacao(trans_id: int) -> None:
     def updater(obj):
         obj = obj or []
-        return [r for r in obj if int(r.get("id", -1)) != int(trans_id)]
+        return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(trans_id))]
     safe_update_json(fin_path("transacoes"), updater, commit_message=f"delete transacao {trans_id}")
 
 def buscar_metas() -> Dict[str, float]:
@@ -175,8 +183,8 @@ def buscar_fixos() -> pd.DataFrame:
 def inserir_fixo(reg: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
-        new_id = (max([int(r.get("id", 0)) for r in obj]) + 1) if obj else 1
-        reg['id'] = new_id
+        new_id = (max([int(r.get("id", 0)) for r in obj if isinstance(r, dict)]) + 1) if obj else 1
+        reg = dict(reg); reg['id'] = new_id
         obj.append(reg)
         return obj
     safe_update_json(fin_path("fixos"), updater, commit_message="add fixo")
@@ -185,23 +193,20 @@ def atualizar_fixo(fixo_id: int, patch: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
         for r in obj:
-            if int(r.get("id", -1)) == int(fixo_id):
-                r.update(patch)
+            if isinstance(r, dict) and int(r.get("id", -1)) == int(fixo_id):
+                r.update(dict(patch))
         return obj
     safe_update_json(fin_path("fixos"), updater, commit_message=f"update fixo {fixo_id}")
 
 def deletar_fixo(fixo_id: int) -> None:
     def updater(obj):
         obj = obj or []
-        return [r for r in obj if int(r.get("id", -1)) != int(fixo_id)]
+        return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(fixo_id))]
     safe_update_json(fin_path("fixos"), updater, commit_message=f"delete fixo {fixo_id}")
 
 # =================================================
 #                      TAREFAS
 # =================================================
-# /data/tarefas/tasks.json: lista de tarefas
-# Campos sugeridos: id, title, description, due_at (ISO), status ('todo','doing','done','cancelled'), assignee ('Guilherme','Alynne','Ambos'), created_at (ISO)
-
 def buscar_tasks() -> List[Dict[str, Any]]:
     obj, _ = gh_get_file(tasks_path("tasks"))
     return obj if isinstance(obj, list) else []
@@ -209,10 +214,9 @@ def buscar_tasks() -> List[Dict[str, Any]]:
 def inserir_task(reg: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
-        new_id = (max([int(r.get("id", 0)) for r in obj]) + 1) if obj else 1
-        reg['id'] = new_id
-        if 'status' not in reg: reg['status'] = 'todo'
-        if 'assignee' not in reg: reg['assignee'] = 'Ambos'
+        new_id = (max([int(r.get("id", 0)) for r in obj if isinstance(r, dict)]) + 1) if obj else 1
+        reg = dict(reg); reg['id'] = new_id
+        reg.setdefault('status', 'todo'); reg.setdefault('assignee', 'Ambos')
         obj.append(reg)
         return obj
     safe_update_json(tasks_path("tasks"), updater, commit_message="add task")
@@ -221,96 +225,187 @@ def atualizar_task(task_id: int, patch: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
         for r in obj:
-            if int(r.get("id", -1)) == int(task_id):
-                r.update(patch)
+            if isinstance(r, dict) and int(r.get("id", -1)) == int(task_id):
+                r.update(dict(patch))
         return obj
     safe_update_json(tasks_path("tasks"), updater, commit_message=f"update task {task_id}")
 
 def deletar_task(task_id: int) -> None:
     def updater(obj):
         obj = obj or []
-        return [r for r in obj if int(r.get("id", -1)) != int(task_id)]
+        return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(task_id))]
     safe_update_json(tasks_path("tasks"), updater, commit_message=f"delete task {task_id}")
 
 # =================================================
-#                       SAÚDE
+#                       SAÚDE (ATUALIZADA)
 # =================================================
-# /data/saude/habits.json: lista de hábitos (id, name, target_per_day, unit)
-# /data/saude/habit_logs.json: logs (id, habit_id, date (YYYY-MM-DD), amount)
+def _ensure_recurrence_dict_or_none(value: Any) -> Optional[dict]:
+    """
+    Garante que 'recurrence' seja dict ou None. Converte valores inválidos para None.
+    """
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        rtype = value.get("type")
+        days = value.get("days")
+        if rtype == "weekly" and isinstance(days, list):
+            days_norm = []
+            for d in days:
+                if isinstance(d, str):
+                    days_norm.append(d)
+            return {"type": "weekly", "days": days_norm}
+        return None
+    return None
 
 def buscar_habitos() -> List[Dict[str, Any]]:
     obj, _ = gh_get_file(saude_path("habits"))
-    return obj if isinstance(obj, list) else []
-
+    if not obj or not isinstance(obj, list):
+        return []
+    out = []
+    for r in obj:
+        if not isinstance(r, dict):
+            continue
+        rr = dict(r)
+        try:
+            rid = int(rr.get("id"))
+        except Exception:
+            continue
+        name = (rr.get("name") or "").strip()
+        try:
+            tgt = int(rr.get("target_per_day", 0) or 0)
+        except Exception:
+            tgt = 0
+        unit = rr.get("unit") or ""
+        rec = _ensure_recurrence_dict_or_none(rr.get("recurrence"))
+        out.append({"id": rid, "name": name, "target_per_day": tgt, "unit": unit, "recurrence": rec})
+    return out
 
 def inserir_habito(reg: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
-        new_id = (max([int(r.get("id", 0)) for r in obj]) + 1) if obj else 1
-        reg['id'] = new_id
-        reg.setdefault('target_per_day', 0)
-        reg.setdefault('unit', '')
-        reg.setdefault('recurrence', None)   # 👈 NOVO CAMPO
-        obj.append(reg)
+        new_id = (max([int(r.get("id", 0)) for r in obj if isinstance(r, dict)]) + 1) if obj else 1
+        name = (reg.get("name") or "").strip()
+        unit = (reg.get("unit") or "")
+        try:
+            target = int(reg.get("target_per_day", 0) or 0)
+        except Exception:
+            target = 0
+        recurrence = _ensure_recurrence_dict_or_none(reg.get("recurrence"))
+        obj.append({"id": new_id, "name": name, "unit": unit, "target_per_day": target, "recurrence": recurrence})
         return obj
     safe_update_json(saude_path("habits"), updater, commit_message="add habit")
 
-
-def atualizar_habito(habit_id, patch):
+def atualizar_habito(habit_id: int, patch: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
+        out = []
         for r in obj:
-            if int(r.get("id", -1)) == int(habit_id):
-                r.update(patch)
-                if "recurrence" not in r:
-                    r["recurrence"] = None
-        return obj
-    safe_update_json(...)
-
+            if not isinstance(r, dict):
+                continue
+            rid = int(r.get("id", -1)) if r.get("id") is not None else -1
+            if rid == int(habit_id):
+                rr = dict(r)
+                if "name" in patch:
+                    rr["name"] = (patch.get("name") or "").strip()
+                if "unit" in patch:
+                    rr["unit"] = (patch.get("unit") or "")
+                if "target_per_day" in patch:
+                    try:
+                        rr["target_per_day"] = int(patch.get("target_per_day", 0) or 0)
+                    except Exception:
+                        rr["target_per_day"] = 0
+                if "recurrence" in patch:
+                    rr["recurrence"] = _ensure_recurrence_dict_or_none(patch.get("recurrence"))
+                rr.setdefault("target_per_day", 0)
+                rr.setdefault("unit", "")
+                rr.setdefault("recurrence", None)
+                out.append(rr)
+            else:
+                out.append(r)
+        return out
+    safe_update_json(saude_path("habits"), updater, commit_message=f"update habit {habit_id}")
 
 def deletar_habito(habit_id: int) -> None:
     def updater(obj):
         obj = obj or []
-        return [r for r in obj if int(r.get("id", -1)) != int(habit_id)]
+        return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(habit_id))]
     safe_update_json(saude_path("habits"), updater, commit_message=f"delete habit {habit_id}")
 
 def buscar_habit_logs() -> List[Dict[str, Any]]:
     obj, _ = gh_get_file(saude_path("habit_logs"))
-    return obj if isinstance(obj, list) else []
+    if not obj or not isinstance(obj, list):
+        return []
+    out = []
+    for r in obj:
+        if not isinstance(r, dict):
+            continue
+        try:
+            log_id = int(r.get("id"))
+            habit_id = int(r.get("habit_id"))
+        except Exception:
+            continue
+        date_str = r.get("date")
+        try:
+            amount = float(r.get("amount", 0) or 0)
+        except Exception:
+            amount = 0.0
+        out.append({"id": log_id, "habit_id": habit_id, "date": date_str, "amount": amount})
+    return out
 
 def inserir_habit_log(reg: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
-        new_id = (max([int(r.get("id", 0)) for r in obj]) + 1) if obj else 1
-        reg['id'] = new_id
-        reg.setdefault('amount', 1)
-        obj.append(reg)
+        new_id = (max([int(r.get("id", 0)) for r in obj if isinstance(r, dict)]) + 1) if obj else 1
+        try:
+            habit_id = int(reg.get("habit_id"))
+        except Exception:
+            raise ValueError("habit_id inválido")
+        date_str = reg.get("date")
+        try:
+            amount = float(reg.get("amount", 0) or 0)
+        except Exception:
+            amount = 0.0
+        obj.append({"id": new_id, "habit_id": habit_id, "date": date_str, "amount": amount})
         return obj
     safe_update_json(saude_path("habit_logs"), updater, commit_message="add habit_log")
 
 def atualizar_habit_log(log_id: int, patch: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
+        out = []
         for r in obj:
-            if int(r.get("id", -1)) == int(log_id):
-                r.update(patch)
-        return obj
+            if not isinstance(r, dict):
+                continue
+            rid = int(r.get("id", -1)) if r.get("id") is not None else -1
+            if rid == int(log_id):
+                rr = dict(r)
+                if "habit_id" in patch:
+                    try:
+                        rr["habit_id"] = int(patch.get("habit_id"))
+                    except Exception:
+                        pass
+                if "date" in patch:
+                    rr["date"] = patch.get("date")
+                if "amount" in patch:
+                    try:
+                        rr["amount"] = float(patch.get("amount", 0) or 0)
+                    except Exception:
+                        rr["amount"] = 0.0
+                out.append(rr)
+            else:
+                out.append(r)
+        return out
     safe_update_json(saude_path("habit_logs"), updater, commit_message=f"update habit_log {log_id}")
 
 def deletar_habit_log(log_id: int) -> None:
     def updater(obj):
         obj = obj or []
-        return [r for r in obj if int(r.get("id", -1)) != int(log_id)]
+        return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(log_id))]
     safe_update_json(saude_path("habit_logs"), updater, commit_message=f"delete habit_log {log_id}")
 
 # =================================================
 #                      ESTUDOS
 # =================================================
-# subjects.json: id, name
-# materials.json: id, subject_id, title, url
-# flashcards.json: id, subject_id, front, back, easiness, interval_days, due_date
-# sessions.json: id, subject_id, started_at (ISO), duration_min, notes
-
 def buscar_subjects() -> List[Dict[str, Any]]:
     obj, _ = gh_get_file(estudos_path("subjects"))
     return obj if isinstance(obj, list) else []
@@ -318,8 +413,8 @@ def buscar_subjects() -> List[Dict[str, Any]]:
 def inserir_subject(reg: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
-        new_id = (max([int(r.get("id", 0)) for r in obj]) + 1) if obj else 1
-        reg['id'] = new_id
+        new_id = (max([int(r.get("id", 0)) for r in obj if isinstance(r, dict)]) + 1) if obj else 1
+        reg = dict(reg); reg['id'] = new_id
         obj.append(reg)
         return obj
     safe_update_json(estudos_path("subjects"), updater, commit_message="add subject")
@@ -328,15 +423,15 @@ def atualizar_subject(subject_id: int, patch: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
         for r in obj:
-            if int(r.get("id", -1)) == int(subject_id):
-                r.update(patch)
+            if isinstance(r, dict) and int(r.get("id", -1)) == int(subject_id):
+                r.update(dict(patch))
         return obj
     safe_update_json(estudos_path("subjects"), updater, commit_message=f"update subject {subject_id}")
 
 def deletar_subject(subject_id: int) -> None:
     def updater(obj):
         obj = obj or []
-        return [r for r in obj if int(r.get("id", -1)) != int(subject_id)]
+        return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(subject_id))]
     safe_update_json(estudos_path("subjects"), updater, commit_message=f"delete subject {subject_id}")
 
 def buscar_materials() -> List[Dict[str, Any]]:
@@ -346,8 +441,8 @@ def buscar_materials() -> List[Dict[str, Any]]:
 def inserir_material(reg: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
-        new_id = (max([int(r.get("id", 0)) for r in obj]) + 1) if obj else 1
-        reg['id'] = new_id
+        new_id = (max([int(r.get("id", 0)) for r in obj if isinstance(r, dict)]) + 1) if obj else 1
+        reg = dict(reg); reg['id'] = new_id
         obj.append(reg)
         return obj
     safe_update_json(estudos_path("materials"), updater, commit_message="add material")
@@ -356,15 +451,15 @@ def atualizar_material(material_id: int, patch: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
         for r in obj:
-            if int(r.get("id", -1)) == int(material_id):
-                r.update(patch)
+            if isinstance(r, dict) and int(r.get("id", -1)) == int(material_id):
+                r.update(dict(patch))
         return obj
     safe_update_json(estudos_path("materials"), updater, commit_message=f"update material {material_id}")
 
 def deletar_material(material_id: int) -> None:
     def updater(obj):
         obj = obj or []
-        return [r for r in obj if int(r.get("id", -1)) != int(material_id)]
+        return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(material_id))]
     safe_update_json(estudos_path("materials"), updater, commit_message=f"delete material {material_id}")
 
 def buscar_flashcards() -> List[Dict[str, Any]]:
@@ -374,10 +469,9 @@ def buscar_flashcards() -> List[Dict[str, Any]]:
 def inserir_flashcard(reg: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
-        new_id = (max([int(r.get("id", 0)) for r in obj]) + 1) if obj else 1
-        reg['id'] = new_id
-        reg.setdefault('easiness', 2.5)
-        reg.setdefault('interval_days', 1)
+        new_id = (max([int(r.get("id", 0)) for r in obj if isinstance(r, dict)]) + 1) if obj else 1
+        reg = dict(reg); reg['id'] = new_id
+        reg.setdefault('easiness', 2.5); reg.setdefault('interval_days', 1)
         reg.setdefault('due_date', str(date.today()))
         obj.append(reg)
         return obj
@@ -387,15 +481,15 @@ def atualizar_flashcard(card_id: int, patch: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
         for r in obj:
-            if int(r.get("id", -1)) == int(card_id):
-                r.update(patch)
+            if isinstance(r, dict) and int(r.get("id", -1)) == int(card_id):
+                r.update(dict(patch))
         return obj
     safe_update_json(estudos_path("flashcards"), updater, commit_message=f"update flashcard {card_id}")
 
 def deletar_flashcard(card_id: int) -> None:
     def updater(obj):
         obj = obj or []
-        return [r for r in obj if int(r.get("id", -1)) != int(card_id)]
+        return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(card_id))]
     safe_update_json(estudos_path("flashcards"), updater, commit_message=f"delete flashcard {card_id}")
 
 def buscar_sessions() -> List[Dict[str, Any]]:
@@ -405,8 +499,8 @@ def buscar_sessions() -> List[Dict[str, Any]]:
 def inserir_session(reg: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
-        new_id = (max([int(r.get("id", 0)) for r in obj]) + 1) if obj else 1
-        reg['id'] = new_id
+        new_id = (max([int(r.get("id", 0)) for r in obj if isinstance(r, dict)]) + 1) if obj else 1
+        reg = dict(reg); reg['id'] = new_id
         obj.append(reg)
         return obj
     safe_update_json(estudos_path("sessions"), updater, commit_message="add study session")
@@ -415,13 +509,13 @@ def atualizar_session(session_id: int, patch: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
         for r in obj:
-            if int(r.get("id", -1)) == int(session_id):
-                r.update(patch)
+            if isinstance(r, dict) and int(r.get("id", -1)) == int(session_id):
+                r.update(dict(patch))
         return obj
     safe_update_json(estudos_path("sessions"), updater, commit_message=f"update study session {session_id}")
 
 def deletar_session(session_id: int) -> None:
     def updater(obj):
         obj = obj or []
-        return [r for r in obj if int(r.get("id", -1)) != int(session_id)]
+        return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(session_id))]
     safe_update_json(estudos_path("sessions"), updater, commit_message=f"delete study session {session_id}")
