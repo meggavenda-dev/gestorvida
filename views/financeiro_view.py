@@ -19,6 +19,9 @@ from github_db import (
     upsert_meta, inserir_fixo, atualizar_fixo, deletar_fixo
 )
 
+# Confirmação de exclusão (UI helper)
+from ui_helpers import confirmar_exclusao
+
 def gerar_excel(df):
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
@@ -39,12 +42,15 @@ def gerar_pdf(df, nome_mes):
     df_exp['data_fmt'] = df_exp['data'].dt.strftime('%d/%m/%Y').fillna('')
     df_exp['descricao'] = df_exp['descricao'].fillna('').astype(str)
     df_exp['valor'] = pd.to_numeric(df_exp['valor'], errors='coerce').fillna(0.0)
-    df_exp['tipo'] = (df_exp['tipo'] if 'tipo' in df_exp.columns else '').fillna('').astype(str)
-    df_exp['status'] = (df_exp['status'] if 'status' in df_exp.columns else 'Pago')
-    if not isinstance(df_exp['status'], pd.Series): df_exp['status'] = 'Pago'
+    if 'tipo' not in df_exp.columns:
+        df_exp['tipo'] = ''
+    else:
+        df_exp['tipo'] = df_exp['tipo'].fillna('').astype(str)
+    if 'status' not in df_exp.columns:
+        df_exp['status'] = 'Pago'
     df_exp['status'] = df_exp['status'].fillna('Pago').astype(str)
-    df_exp['responsavel'] = (df_exp['responsavel'] if 'responsavel' in df_exp.columns else 'Ambos')
-    if not isinstance(df_exp['responsavel'], pd.Series): df_exp['responsavel'] = 'Ambos'
+    if 'responsavel' not in df_exp.columns:
+        df_exp['responsavel'] = 'Ambos'
     df_exp['responsavel'] = df_exp['responsavel'].fillna('Ambos').astype(str)
     df_exp = df_exp.sort_values(by=['data', 'descricao'], na_position='last')
 
@@ -113,12 +119,39 @@ def render_financeiro():
     meses = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
     PESSOAS = st.session_state.pessoas
 
-    # Filtros Mês/Ano
+    # Navegação de Mês/Ano com +/-
     hoje = date.today()
-    c_m, c_a = st.columns([2, 1])
-    mes_nome = c_m.selectbox("Mês", meses, index=hoje.month - 1)
-    ano_ref = c_a.number_input("Ano", value=hoje.year, step=1)
-    mes_num = meses.index(mes_nome) + 1
+    if 'fin_mes' not in st.session_state:
+        st.session_state.fin_mes = hoje.month
+    if 'fin_ano' not in st.session_state:
+        st.session_state.fin_ano = hoje.year
+
+    c_nav1, c_nav2, c_nav3, c_nav4 = st.columns([0.6, 2.4, 1, 0.6])
+    prev = c_nav1.button("◀", key="fin_prev_m", help="Mês anterior")
+    mes_nome = c_nav2.selectbox("Mês", meses, index=st.session_state.fin_mes - 1)
+    ano_ref = c_nav3.number_input("Ano", value=st.session_state.fin_ano, step=1)
+    nxt = c_nav4.button("▶", key="fin_next_m", help="Próximo mês")
+
+    st.session_state.fin_mes = meses.index(mes_nome) + 1
+    st.session_state.fin_ano = int(ano_ref)
+
+    if prev:
+        if st.session_state.fin_mes == 1:
+            st.session_state.fin_mes = 12
+            st.session_state.fin_ano -= 1
+        else:
+            st.session_state.fin_mes -= 1
+        st.rerun()
+    if nxt:
+        if st.session_state.fin_mes == 12:
+            st.session_state.fin_mes = 1
+            st.session_state.fin_ano += 1
+        else:
+            st.session_state.fin_mes += 1
+        st.rerun()
+
+    mes_num = st.session_state.fin_mes
+    ano_ref = st.session_state.fin_ano
 
     # Processamento
     df_geral = st.session_state.dados.copy()
@@ -165,6 +198,7 @@ def render_financeiro():
                     col_at1.write(f"**{row['descricao']}** ({dt_txt}) — **Resp.: {row.get('responsavel','Ambos')}**")
                     if col_at2.button("✔ Pagar", key=f"fin_pay_at_{row['id']}"):
                         atualizar_transacao(int(row['id']), {"status": "Pago"})
+                        st.toast("Pagamento registrado.")
                         st.session_state.dados = buscar_dados(); st.rerun()
 
         if not df_mes.empty:
@@ -229,12 +263,12 @@ def render_financeiro():
                 with cp:
                     if s_text != "Pago" and st.button("✔ Pagar", key=f"fin_pay_{row['id']}"):
                         atualizar_transacao(int(row['id']), {"status": "Pago"})
+                        st.toast("Pagamento registrado.")
                         st.session_state.dados = buscar_dados(); st.rerun()
                 with cd:
-                    st.markdown('<div class="btn-excluir">', unsafe_allow_html=True)
+                    st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
                     if st.button("Excluir", key=f"fin_del_{row['id']}"):
-                        deletar_transacao(int(row['id']))
-                        st.session_state.dados = buscar_dados(); st.rerun()
+                        confirmar_exclusao(f"dlg_fin_{row['id']}", "Confirmar exclusão", lambda: deletar_transacao(int(row['id'])))
                     st.markdown('</div>', unsafe_allow_html=True)
 
                 st.markdown("<br>", unsafe_allow_html=True)
@@ -296,8 +330,7 @@ def render_financeiro():
                             atualizar_fixo(int(row['id']), {"descricao": new_desc, "valor": float(new_val), "responsavel": new_resp})
                             st.session_state.fixos = buscar_fixos(); st.rerun()
                         if col_ed2.button("❌ Remover Fixo", key=f"fin_del_fix_{row['id']}"):
-                            deletar_fixo(int(row['id']))
-                            st.session_state.fixos = buscar_fixos(); st.rerun()
+                            confirmar_exclusao(f"dlg_fix_{row['id']}", "Confirmar exclusão", lambda: deletar_fixo(int(row['id'])))
             else:
                 st.caption("Sem fixos configurados.")
 
@@ -324,7 +357,7 @@ def render_financeiro():
             df_para_relatorio = df_para_relatorio[mask].copy()
             df_para_relatorio = df_para_relatorio.sort_values(by=['data', 'descricao'], na_position='last')
 
-            st.caption(f"🧾 Lançamentos no relatório: **{len(df_para_relatorio)}**")
+            st.caption(f"🧾 {len(df_para_relatorio)} lançamentos em **{mes_nome}/{ano_ref}**")
 
             if not df_para_relatorio.empty:
                 col_rel1, col_rel2 = st.columns(2)
