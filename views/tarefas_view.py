@@ -8,6 +8,7 @@ from github_db import (
     buscar_tasks, inserir_task, atualizar_task, deletar_task,
     buscar_pessoas
 )
+from ui_helpers import confirmar_exclusao
 
 STATUS_OPCOES = ['todo', 'doing', 'done', 'cancelled']
 
@@ -73,35 +74,37 @@ def render_tarefas():
 
     st.divider()
 
+    # Nova tarefa rápida
+    st.markdown("#### ➕ Nova rápida")
+    with st.form("form_task_quick", clear_on_submit=True):
+        col_q1, col_q2, col_q3 = st.columns([2,1,1])
+        title = col_q1.text_input("Título", placeholder="O que precisa ser feito?")
+        assignee = col_q2.selectbox("Resp.", options=PESSOAS, index=0)
+        due = col_q3.date_input("Venc.", value=None)
+        desc = st.text_input("Detalhes (opcional)")
+        if st.form_submit_button("Adicionar"):
+            if not title.strip():
+                st.error("Informe o título.")
+            else:
+                inserir_task({
+                    "title": title.strip(),
+                    "description": desc.strip(),
+                    "due_at": due.isoformat() if due else None,
+                    "status": "todo",
+                    "assignee": assignee,
+                    "created_at": datetime.utcnow().isoformat()
+                })
+                st.toast("Tarefa criada!")
+                st.session_state.tasks = buscar_tasks()
+                st.rerun()
+
+    st.divider()
+
     # Filtros
     col_f1, col_f2, col_f3 = st.columns([1.5, 1.5, 1])
     status_sel = col_f1.multiselect("Status", STATUS_OPCOES, default=['todo', 'doing'])
     resp_sel = col_f2.selectbox("Responsável", options=["Todos"] + PESSOAS, index=0)
     janela = col_f3.selectbox("Vencimento", options=["Todos", "Hoje", "Próximos 7 dias", "Próximos 30 dias"], index=0)
-
-    # Nova tarefa
-    with st.expander("➕ Nova tarefa", expanded=False):
-        with st.form("form_task", clear_on_submit=True):
-            title = st.text_input("Título")
-            desc = st.text_area("Descrição", height=80)
-            due = st.date_input("Vencimento (opcional)", value=None)
-            assignee = st.selectbox("Responsável", options=PESSOAS, index=0)
-            status_init = st.selectbox("Status", options=STATUS_OPCOES, index=0)
-            if st.form_submit_button("Salvar"):
-                if not title.strip():
-                    st.error("Informe o título.")
-                else:
-                    inserir_task({
-                        "title": title.strip(),
-                        "description": desc.strip(),
-                        "due_at": due.isoformat() if due else None,
-                        "status": status_init,
-                        "assignee": assignee,
-                        "created_at": datetime.utcnow().isoformat()
-                    })
-                    st.success("Tarefa criada!")
-                    st.session_state.tasks = buscar_tasks()
-                    st.rerun()
 
     st.markdown("### Lista de Tarefas")
     df_view = filtrar_tasks(st.session_state.tasks, status_sel, resp_sel, janela)
@@ -136,15 +139,19 @@ def render_tarefas():
         </div>
         """, unsafe_allow_html=True)
 
-        c1, c2, c3, c4 = st.columns([1,1,2,1])
+        c1, c2, c3, c4 = st.columns([1,1.4,2,1])
         with c1:
             if s != 'done' and st.button("✔ Concluir", key=f"tsk_done_{row['id']}"):
                 atualizar_task(int(row['id']), {"status": "done"})
+                st.toast("Concluída!")
                 st.session_state.tasks = buscar_tasks(); st.rerun()
         with c2:
-            novo_status = st.selectbox("Status", STATUS_OPCOES, index=STATUS_OPCOES.index(s), key=f"tsk_st_{row['id']}")
-            if st.button("Salvar Status", key=f"tsk_save_st_{row['id']}"):
-                atualizar_task(int(row['id']), {"status": novo_status})
+            col_bs1, col_bs2 = st.columns(2)
+            if col_bs1.button("⏳ TODO", key=f"tsk_to_{row['id']}"):
+                atualizar_task(int(row['id']), {"status": "todo"})
+                st.session_state.tasks = buscar_tasks(); st.rerun()
+            if col_bs2.button("🔄 DOING", key=f"tsk_do_{row['id']}"):
+                atualizar_task(int(row['id']), {"status": "doing"})
                 st.session_state.tasks = buscar_tasks(); st.rerun()
         with c3:
             with st.expander("Editar"):
@@ -159,10 +166,10 @@ def render_tarefas():
                         "due_at": ndue.isoformat() if ndue else None,
                         "assignee": nass
                     })
+                    st.toast("Atualizado!")
                     st.session_state.tasks = buscar_tasks(); st.rerun()
         with c4:
             st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
             if st.button("Excluir", key=f"tsk_del_{row['id']}"):
-                deletar_task(int(row['id']))
-                st.session_state.tasks = buscar_tasks(); st.rerun()
+                confirmar_exclusao(f"dlg_tsk_{row['id']}", "Confirmar exclusão", lambda: deletar_task(int(row['id'])))
             st.markdown('</div>', unsafe_allow_html=True)
