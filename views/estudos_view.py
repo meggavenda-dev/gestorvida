@@ -251,23 +251,32 @@ def render_estudos():
         ordem = col_f3.selectbox("Ordem", options=["Mais urgentes", "Mais novos"], index=0)
         sel_sid = nomes_to_id[sid_name]
 
+        
         # Formulário de novo flashcard - sempre visível se houver assunto
         st.markdown("#### ➕ Novo flashcard")
-        with st.form("form_card", clear_on_submit=True):
-            assuntos_validos = [n for n,_ in sid_options if _ is not None]
-            if assuntos_validos:
+
+        # Monte a lista de assuntos válidos (todos com id)
+        assuntos_validos = [n for n, _id in sid_options if _id is not None]
+
+        if assuntos_validos:
+            # Abra o formulário somente se houver assunto
+            # (evita "Missing Submit Button" quando não há submit)
+            with st.form("form_card", clear_on_submit=True):
                 # Seleciona por padrão o assunto do filtro, se for específico
                 default_idx = 0
                 if sel_sid is not None:
-                    # acha o índice do assunto correspondente em assuntos_validos
                     for i, nome in enumerate(assuntos_validos):
                         if nomes_to_id.get(nome) == sel_sid:
                             default_idx = i
                             break
+
                 sb = st.selectbox("Assunto", options=assuntos_validos, index=default_idx, key="new_card_subj")
                 subj_id = nomes_to_id[sb]
+
                 front = st.text_area("Frente", height=80)
                 back = st.text_area("Verso", height=80)
+
+                # ✅ O submit SEMPRE está dentro do form
                 if st.form_submit_button("Salvar"):
                     if not front.strip() or not back.strip():
                         st.error("Preencha frente e verso.")
@@ -283,8 +292,10 @@ def render_estudos():
                         except Exception as e:
                             st.error("Falha ao criar flashcard.")
                             st.exception(e)
-            else:
-                st.warning("Cadastre um assunto primeiro em **Assuntos & Materiais** para criar flashcards.")
+        else:
+            # ⚠️ Não há assunto -> não abrir form; mostrar aviso fora de form
+            st.warning("Cadastre um assunto primeiro em **Assuntos & Materiais** para criar flashcards.")
+
 
         st.divider()
 
