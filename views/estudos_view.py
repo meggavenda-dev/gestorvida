@@ -11,6 +11,8 @@ from github_db import (
     buscar_sessions, inserir_session, atualizar_session, deletar_session
 )
 
+from ui_helpers import confirmar_exclusao
+
 def recarregar():
     st.session_state.subjects = buscar_subjects()
     st.session_state.materials = buscar_materials()
@@ -107,7 +109,7 @@ def render_estudos():
                         mtitle = mt.get('title') or "(sem título)"
                         murl = mt.get('url') or ""
                         st.write(f"🔗 **{mtitle}** — {murl}")
-                        c1, c2, c3 = st.columns([2,1,1])
+                        c1, c3 = st.columns([2,1])
                         with c1:
                             if mid is not None:
                                 with st.expander("Editar material"):
@@ -115,12 +117,13 @@ def render_estudos():
                                     nu = st.text_input("URL", value=murl, key=f"mt_u_{mid}")
                                     if st.button("Salvar", key=f"mt_sv_{mid}"):
                                         atualizar_material(mid, {"title": nt.strip(), "url": nu.strip()})
+                                        st.toast("Material atualizado!")
                                         recarregar(); st.rerun()
                         with c3:
                             if mid is not None:
                                 st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
                                 if st.button("Excluir", key=f"mt_del_{mid}"):
-                                    deletar_material(mid); recarregar(); st.rerun()
+                                    confirmar_exclusao(f"dlg_mt_{mid}", "Confirmar exclusão", lambda: deletar_material(mid))
                                 st.markdown('</div>', unsafe_allow_html=True)
 
                 # Adicionar material
@@ -143,12 +146,12 @@ def render_estudos():
                         with st.expander("Editar assunto"):
                             nn = st.text_input("Nome", value=nome_assunto, key=f"sb_n_{sid}")
                             if st.button("Salvar assunto", key=f"sb_sv_{sid}"):
-                                atualizar_subject(sid, {"name": nn.strip()}); recarregar(); st.rerun()
+                                atualizar_subject(sid, {"name": nn.strip()}); st.toast("Assunto atualizado!"); recarregar(); st.rerun()
                 with col_a2:
                     if sid is not None:
                         st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
                         if st.button("Excluir assunto", key=f"sb_del_{sid}"):
-                            deletar_subject(sid); recarregar(); st.rerun()
+                            confirmar_exclusao(f"dlg_sb_{sid}", "Confirmar exclusão", lambda: deletar_subject(sid))
                         st.markdown('</div>', unsafe_allow_html=True)
 
     # ===== Flashcards =====
@@ -234,7 +237,7 @@ def render_estudos():
                     else:
                         st.warning("Cadastre um assunto primeiro.")
 
-            # SM-2 simplificado
+            # SM-2 simplificado (3 botões: novamente / bom / fácil)
             def sm2_update(card, quality: int):
                 e = float(card.get('easiness', 2.5) or 2.5)
                 interval = int(card.get('interval_days', 1) or 1)
@@ -250,6 +253,12 @@ def render_estudos():
                 due = date.today() + timedelta(days=interval)
                 return e, interval, due
 
+            def _apply_review(cid, card, q):
+                e,i,d = sm2_update(card, q)
+                atualizar_flashcard(cid, {"easiness": e, "interval_days": i, "due_date": d.isoformat()})
+                st.toast(f"Revisado — próximo em {i}d")
+                recarregar(); st.rerun()
+
             # Revisão e edição
             for _, c in df_c.iterrows():
                 cid = int(c['id']) if pd.notnull(c['id']) else None
@@ -259,19 +268,13 @@ def render_estudos():
                 with st.expander("Mostrar resposta"):
                     st.write(c.get('back',''))
 
-                col_b1, col_b2, col_b3, col_b4, col_b5, col_b6 = st.columns(6)
-                if col_b1.button("0", key=f"q0_{cid}"):
-                    e,i,d = sm2_update(c, 0); atualizar_flashcard(cid, {"easiness": e, "interval_days": i, "due_date": d.isoformat()}); recarregar(); st.rerun()
-                if col_b2.button("1", key=f"q1_{cid}"):
-                    e,i,d = sm2_update(c, 1); atualizar_flashcard(cid, {"easiness": e, "interval_days": i, "due_date": d.isoformat()}); recarregar(); st.rerun()
-                if col_b3.button("2", key=f"q2_{cid}"):
-                    e,i,d = sm2_update(c, 2); atualizar_flashcard(cid, {"easiness": e, "interval_days": i, "due_date": d.isoformat()}); recarregar(); st.rerun()
-                if col_b4.button("3", key=f"q3_{cid}"):
-                    e,i,d = sm2_update(c, 3); atualizar_flashcard(cid, {"easiness": e, "interval_days": i, "due_date": d.isoformat()}); recarregar(); st.rerun()
-                if col_b5.button("4", key=f"q4_{cid}"):
-                    e,i,d = sm2_update(c, 4); atualizar_flashcard(cid, {"easiness": e, "interval_days": i, "due_date": d.isoformat()}); recarregar(); st.rerun()
-                if col_b6.button("5", key=f"q5_{cid}"):
-                    e,i,d = sm2_update(c, 5); atualizar_flashcard(cid, {"easiness": e, "interval_days": i, "due_date": d.isoformat()}); recarregar(); st.rerun()
+                col_r1, col_r2, col_r3 = st.columns(3)
+                if col_r1.button("🔁 Novamente", key=f"qA_{cid}"):
+                    _apply_review(cid, c, 1)  # 0–2
+                if col_r2.button("👍 Bom", key=f"qG_{cid}"):
+                    _apply_review(cid, c, 4)  # 3–4
+                if col_r3.button("✨ Fácil", key=f"qE_{cid}"):
+                    _apply_review(cid, c, 5)  # 5
 
                 c1, c2 = st.columns([3,1])
                 with c1:
@@ -280,11 +283,12 @@ def render_estudos():
                         nb = st.text_area("Verso", value=c.get('back',''), key=f"cb_{cid}")
                         if st.button("Salvar", key=f"c_save_{cid}"):
                             atualizar_flashcard(cid, {"front": nf.strip(), "back": nb.strip()})
+                            st.toast("Atualizado!")
                             recarregar(); st.rerun()
                 with c2:
                     st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
                     if st.button("Excluir", key=f"c_del_{cid}"):
-                        deletar_flashcard(cid); recarregar(); st.rerun()
+                        confirmar_exclusao(f"dlg_card_{cid}", "Confirmar exclusão", lambda: deletar_flashcard(cid))
                     st.markdown('</div>', unsafe_allow_html=True)
 
     # ===== Sessões =====
@@ -363,17 +367,17 @@ def render_estudos():
                 sess_id = int(se['id']) if 'id' in df_se.columns and pd.notnull(se['id']) else None
                 if sess_id is None:
                     continue
-                c1, c2, c3 = st.columns([2,1,1])
+                c1, c3 = st.columns([2,1])
                 with c1:
                     with st.expander("Editar sessão"):
                         ndur = st.number_input("Duração (min)", min_value=1, value=duracao if duracao>0 else 1, step=1, key=f"se_dur_{sess_id}")
                         nnotes = st.text_area("Notas", value=notas, key=f"se_nt_{sess_id}")
                         if st.button("Salvar", key=f"se_sv_{sess_id}"):
                             atualizar_session(int(sess_id), {"duration_min": int(ndur), "notes": nnotes.strip()})
+                            st.toast("Sessão atualizada!")
                             recarregar(); st.rerun()
                 with c3:
                     st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
                     if st.button("Excluir", key=f"se_del_{sess_id}"):
-                        deletar_session(int(sess_id))
-                        recarregar(); st.rerun()
+                        confirmar_exclusao(f"dlg_se_{sess_id}", "Confirmar exclusão", lambda: deletar_session(int(sess_id)))
                     st.markdown('</div>', unsafe_allow_html=True)
