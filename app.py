@@ -5,9 +5,8 @@ from datetime import date
 from supabase import create_client, Client
 import io
 import streamlit.components.v1 as components
-import bcrypt
 
-# Relatórios
+# Relatórios e Exportação
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
@@ -15,209 +14,209 @@ from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import mm
 
 # ============================
-# CONFIGURAÇÃO DA PÁGINA
+# 1. CONFIGURAÇÃO DA PÁGINA
 # ============================
 st.set_page_config(
     page_title="Life OS 360",
-    page_icon="🏠",
+    page_icon="🏡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # ============================
-# CONEXÃO SUPABASE
+# 2. CONEXÃO E FUNÇÕES DB
 # ============================
-try:
-    url: str = st.secrets["SUPABASE_URL"]
-    key: str = st.secrets["SUPABASE_KEY"]
-    supabase: Client = create_client(url, key)
-except Exception:
-    st.error("Erro de conexão. Verifique os Secrets.")
-    st.stop()
-
-# ============================
-# FUNÇÕES DE APOIO (DB)
-# ============================
-def buscar_pessoas():
+@st.cache_resource
+def init_connection():
     try:
-        res = supabase.table("vw_pessoas_ativas").select("*").execute()
-        if res.data:
-            nomes = [r.get('nome') for r in res.data if r.get('nome')]
-            return [n for n in nomes if n.lower() != 'ambos'] + ['Ambos']
-    except: pass
-    return ['Guilherme', 'Alynne', 'Ambos']
+        url = st.secrets["SUPABASE_URL"]
+        key = st.secrets["SUPABASE_KEY"]
+        return create_client(url, key)
+    except Exception as e:
+        st.error(f"Erro de conexão: {e}")
+        return None
+
+supabase = init_connection()
 
 def buscar_dados_financeiros():
     res = supabase.table("transacoes").select("*").execute()
     df = pd.DataFrame(res.data)
-    if df.empty: return pd.DataFrame(columns=['id', 'data', 'descricao', 'valor', 'tipo', 'categoria', 'status', 'responsavel'])
+    if df.empty:
+        return pd.DataFrame(columns=['id', 'data', 'descricao', 'valor', 'tipo', 'categoria', 'status', 'responsavel'])
     df['data'] = pd.to_datetime(df['data'], errors='coerce')
     return df
 
+def buscar_pessoas():
+    try:
+        res = supabase.table("vw_pessoas_ativas").select("*").execute()
+        nomes = [r.get('nome') for r in res.data] if res.data else []
+        return [n for n in nomes if n.lower() != 'ambos'] + ['Ambos']
+    except:
+        return ['Guilherme', 'Alynne', 'Ambos']
+
 # ============================
-# CSS & STYLE (UNIFICADO)
+# 3. RELATÓRIOS (PDF / EXCEL)
+# ============================
+def gerar_pdf(df, mes_nome):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4)
+    elements = []
+    styles = getSampleStyleSheet()
+    elements.append(Paragraph(f"Relatório Financeiro - {mes_nome}", styles['Title']))
+    
+    # Preparar dados para tabela
+    data = [["Data", "Descrição", "Valor", "Tipo", "Responsável"]]
+    for _, r in df.iterrows():
+        data.append([r['data'].strftime('%d/%m/%Y'), r['descricao'], f"R$ {r['valor']:.2f}", r['tipo'], r['responsavel']])
+    
+    t = Table(data, colWidths=[25*mm, 60*mm, 30*mm, 25*mm, 30*mm])
+    t.setStyle(TableStyle([('BACKGROUND',(0,0),(-1,0),colors.grey),('TEXTCOLOR',(0,0),(-1,0),colors.whitesmoke)]))
+    elements.append(t)
+    doc.build(elements)
+    return buffer.getvalue()
+
+def gerar_excel(df):
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
+        df.to_excel(writer, index=False, sheet_name='Financeiro')
+    return output.getvalue()
+
+# ============================
+# 4. ESTILOS CSS
 # ============================
 def aplicar_estilos():
     st.markdown("""
     <style>
-    :root{ --brand: #2563EB; --bg: #F3F5F9; }
-    .stApp { background: var(--bg); }
-    [data-testid="stMetric"] { background: white; border-radius: 12px; border: 1px solid #D6DEE8; padding: 15px; }
-    .transaction-card { background: white; padding: 12px; border-radius: 12px; margin-bottom: 8px; border: 1px solid #D6DEE8; display: flex; justify-content: space-between; align-items: center;}
-    .status-badge { font-size: 10px; padding: 2px 8px; border-radius: 8px; font-weight: bold; text-transform: uppercase; }
+    .stApp { background-color: #F3F5F9; }
+    [data-testid="stMetric"] { background: white; border-radius: 12px; border: 1px solid #D6DEE8; padding: 15px; box-shadow: 2px 2px 5px rgba(0,0,0,0.05); }
+    .transaction-card { background: white; padding: 15px; border-radius: 12px; margin-bottom: 10px; border: 1px solid #E6ECF3; display: flex; justify-content: space-between; align-items: center; }
+    .status-badge { font-size: 11px; padding: 3px 10px; border-radius: 20px; font-weight: bold; }
     .pago { background: #DCFCE7; color: #166534; }
     .pendente { background: #FEF3C7; color: #92400E; }
-    /* Mobile Ajustes */
-    @media (max-width: 480px) { .main-title { font-size: 1.5rem; } }
     </style>
     """, unsafe_allow_html=True)
 
 # ============================
-# ABA 1: FINANCEIRO (INTEGRADA)
+# 5. ABAS DO SISTEMA
 # ============================
+
 def aba_financeiro():
-    st.markdown('<h1 style="color:#1E293B;">💰 Gestão Financeira</h1>', unsafe_allow_html=True)
+    st.title("💰 Gestão Financeira")
     
-    # Sincronização
+    # Sincronização de Estado
     if 'dados' not in st.session_state: st.session_state.dados = buscar_dados_financeiros()
     if 'pessoas' not in st.session_state: st.session_state.pessoas = buscar_pessoas()
-    
+
     meses = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
-    col_m, col_a = st.columns(2)
-    mes_sel = col_m.selectbox("Mês Referência", meses, index=date.today().month -1)
-    ano_sel = col_a.number_input("Ano Referência", value=date.today().year)
+    c1, c2 = st.columns(2)
+    mes_ref = c1.selectbox("Mês", meses, index=date.today().month - 1)
+    ano_ref = c2.number_input("Ano", value=date.today().year)
     
-    mes_num = meses.index(mes_sel) + 1
-    df = st.session_state.dados.copy()
-    df_mes = df[(df['data'].dt.month == mes_num) & (df['data'].dt.year == ano_sel)]
+    df_mes = st.session_state.dados[
+        (st.session_state.dados['data'].dt.month == meses.index(mes_ref) + 1) & 
+        (st.session_state.dados['data'].dt.year == ano_ref)
+    ].copy()
 
-    # Métricas Rápidas
-    in_val = df_mes[df_mes['tipo'] == 'Entrada']['valor'].sum()
-    out_val = df_mes[(df_mes['tipo'] == 'Saída') & (df_mes['status'] == 'Pago')]['valor'].sum()
+    # Métricas
+    ent = df_mes[df_mes['tipo'] == 'Entrada']['valor'].sum()
+    sai = df_mes[(df_mes['tipo'] == 'Saída') & (df_mes['status'] == 'Pago')]['valor'].sum()
     
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Entradas", f"R$ {in_val:,.2f}")
-    c2.metric("Saídas Pagas", f"R$ {out_val:,.2f}")
-    c3.metric("Saldo", f"R$ {in_val - out_val:,.2f}")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Ganhos", f"R$ {ent:,.2f}")
+    m2.metric("Gastos (Pagos)", f"R$ {sai:,.2f}")
+    m3.metric("Saldo Real", f"R$ {ent - sai:,.2f}")
 
-    # Sub-abas do financeiro
-    tab_list, tab_add = st.tabs(["📑 Extrato", "➕ Novo Lançamento"])
-    
-    with tab_list:
-        for _, row in df_mes.sort_values(by='data', ascending=False).iterrows():
+    t1, t2, t3 = st.tabs(["📊 Extrato", "➕ Novo", "📄 Relatórios"])
+
+    with t1:
+        if df_mes.empty: st.info("Sem lançamentos.")
+        for _, r in df_mes.sort_values(by='data', ascending=False).iterrows():
+            cor_valor = "#0EA5E9" if r['tipo'] == "Entrada" else "#DC2626"
             st.markdown(f"""
             <div class="transaction-card">
                 <div>
-                    <b>{row['descricao']}</b><br>
-                    <small>{row['data'].strftime('%d/%m')} | {row['responsavel']}</small>
+                    <b>{r['descricao']}</b><br><small>{r['data'].strftime('%d/%m')} | {r['responsavel']}</small>
                 </div>
                 <div style="text-align:right">
-                    <span style="color:{'#0EA5E9' if row['tipo']=='Entrada' else '#DC2626'}">
-                        R$ {row['valor']:,.2f}
-                    </span><br>
-                    <span class="status-badge {row['status'].lower()}">{row['status']}</span>
+                    <b style="color:{cor_valor}">R$ {r['valor']:,.2f}</b><br>
+                    <span class="status-badge {r['status'].lower()}">{r['status']}</span>
                 </div>
             </div>
             """, unsafe_allow_html=True)
 
-    with tab_add:
-        with st.form("add_fin"):
-            desc = st.text_input("Descrição")
-            valor = st.number_input("Valor", min_value=0.0)
-            tipo = st.radio("Tipo", ["Saída", "Entrada"], horizontal=True)
-            resp = st.selectbox("Quem?", st.session_state.pessoas)
-            if st.form_submit_button("Salvar"):
+    with t2:
+        with st.form("novo_fin"):
+            f_desc = st.text_input("Descrição")
+            f_val = st.number_input("Valor", min_value=0.0)
+            f_tipo = st.radio("Tipo", ["Saída", "Entrada"], horizontal=True)
+            f_resp = st.selectbox("Responsável", st.session_state.pessoas)
+            if st.form_submit_button("Lançar"):
                 supabase.table("transacoes").insert({
-                    "descricao": desc, "valor": valor, "tipo": tipo, 
-                    "responsavel": resp, "data": str(date.today()), "status": "Pago"
+                    "data": str(date.today()), "descricao": f_desc, "valor": f_val,
+                    "tipo": f_tipo, "responsavel": f_resp, "status": "Pago", "categoria": "Geral"
                 }).execute()
                 st.session_state.dados = buscar_dados_financeiros()
+                st.success("Lançado!")
                 st.rerun()
 
-# ============================
-# ABA 2: TAREFAS
-# ============================
+    with t3:
+        st.download_button("📥 Baixar PDF", gerar_pdf(df_mes, mes_ref), f"Financeiro_{mes_ref}.pdf")
+        st.download_button("📥 Baixar Excel", gerar_excel(df_mes), f"Financeiro_{mes_ref}.xlsx")
+
 def aba_tarefas():
-    st.markdown('<h1 style="color:#1E293B;">🗓️ Tarefas & Reuniões</h1>', unsafe_allow_html=True)
-    
-    with st.expander("➕ Nova Tarefa/Compromisso", expanded=False):
-        with st.form("form_tarefa"):
-            task = st.text_input("O que precisa ser feito?")
-            cat = st.selectbox("Categoria", ["Trabalho", "Casa", "Estudo", "Saúde"])
-            prazo = st.date_input("Prazo")
-            if st.form_submit_button("Agendar"):
-                # Aqui iria o insert no supabase (tabela tarefas)
-                st.success("Tarefa adicionada!")
+    st.title("🗓️ Tarefas & Reuniões")
+    st.checkbox("Reunião de Alinhamento Semanal")
+    st.checkbox("Pagar fatura do cartão")
+    st.text_input("Nova tarefa...")
 
-    st.write("### Pendentes")
-    st.checkbox("Finalizar fechamento do mês")
-    st.checkbox("Levar o carro na revisão")
-
-# ============================
-# ABA 3: SAÚDE
-# ============================
 def aba_saude():
-    st.markdown('<h1 style="color:#1E293B;">🍎 Saúde & Bem-estar</h1>', unsafe_allow_html=True)
-    col1, col2 = st.columns(2)
-    with col1:
-        st.metric("Consumo de Água", "1.8L", "Meta: 3L")
-        st.button("🥤 +250ml")
-    with col2:
-        st.metric("Peso", "78.5 kg", "-0.2 kg")
-    
-    st.write("### Progresso de Peso")
-    st.line_chart(pd.DataFrame([79, 78.8, 78.5, 78.7, 78.5], columns=["Peso"]))
+    st.title("🍎 Saúde")
+    st.metric("Água Hoje", "1.2L / 3L", "+200ml")
+    st.line_chart([78.5, 78.2, 77.9, 78.0])
 
 # ============================
-# ABA 4: ESTUDOS
-# ============================
-def aba_estudos():
-    st.markdown('<h1 style="color:#1E293B;">📚 Central de Estudos</h1>', unsafe_allow_html=True)
-    
-    materias = {"Python para Dados": 0.75, "Inglês": 0.40, "Finanças Quantitativas": 0.15}
-    
-    for mat, prog in materias.items():
-        st.write(f"**{mat}**")
-        st.progress(prog)
-    
-    st.info("💡 Continue assim! Você estudou 4.5 horas esta semana.")
-
-# ============================
-# MAIN APP & LOGIN
+# 6. LOGIN E NAVEGAÇÃO
 # ============================
 def main():
     aplicar_estilos()
 
-    # Login Simples (Session State)
     if 'logado' not in st.session_state:
         st.session_state.logado = False
 
+    # Tela de Login
     if not st.session_state.logado:
-        st.title("🔐 Life OS - Acesso")
-        senha = st.text_input("Senha de acesso", type="password")
-        if st.button("Entrar"):
-            if senha == st.secrets["APP_PASSWORD"]: # Defina nos secrets
-                st.session_state.logado = True
-                st.rerun()
-            else: st.error("Incorreto")
+        st.markdown("<br><br>", unsafe_allow_html=True)
+        col_l, col_r = st.columns([1, 1])
+        with col_l:
+            st.image("https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f3e0.png", width=80)
+            st.title("Life OS 360")
+            st.subheader("Bem-vindo de volta!")
+            
+            # Tenta pegar a senha dos secrets, se não existir usa uma padrão para não quebrar
+            senha_mestra = st.secrets.get("APP_PASSWORD", "1234")
+            
+            senha_input = st.text_input("Senha de Acesso", type="password")
+            if st.button("Entrar"):
+                if senha_input == senha_mestra:
+                    st.session_state.logado = True
+                    st.rerun()
+                else:
+                    st.error("Senha incorreta!")
         return
 
     # Menu Lateral
     with st.sidebar:
-        st.image("https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f3e0.png", width=50)
-        st.title("Life OS 360")
+        st.title("🏠 Life OS")
+        menu = st.radio("Navegação", ["💰 Financeiro", "🗓️ Tarefas", "🍎 Saúde"])
         st.divider()
-        menu = st.radio("Ir para:", ["💰 Financeiro", "🗓️ Tarefas", "🍎 Saúde", "📚 Estudos"])
-        st.spacer = st.container()
         if st.button("Sair"):
             st.session_state.logado = False
             st.rerun()
 
-    # Roteamento
-    if "Financeiro" in menu: aba_financeiro()
-    elif "Tarefas" in menu: aba_tarefas()
-    elif "Saúde" in menu: aba_saude()
-    elif "Estudos" in menu: aba_estudos()
+    # Roteamento de Abas
+    if menu == "💰 Financeiro": aba_financeiro()
+    elif menu == "🗓️ Tarefas": aba_tarefas()
+    elif menu == "🍎 Saúde": aba_saude()
 
 if __name__ == "__main__":
     main()
