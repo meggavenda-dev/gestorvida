@@ -18,5 +18,19 @@
       ]
     },
     "id": 2
+  },
+  {
+    "name": "Malhar",
+    "target_per_day": 0,
+    "unit": "vezes",
+    "recurrence": {
+      "type": "weekly",
+      "days": [
+        "mon",
+        "wed",
+        "fri"
+      ]
+    },
+    "id": 3
   }
 ]
