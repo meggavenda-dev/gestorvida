@@ -9,6 +9,8 @@ from github_db import (
     buscar_habit_logs, inserir_habit_log, atualizar_habit_log, deletar_habit_log
 )
 
+from ui_helpers import confirmar_exclusao
+
 # ---------------------------------------------
 #  MAPEAMENTOS DE DIAS (PT ↔ CÓDIGO INTERNACIONAL)
 # ---------------------------------------------
@@ -206,12 +208,13 @@ def render_saude():
         st.progress(progresso)
 
         # Ações
-        c1, c2, c3, c4 = st.columns([1,1,2,2])
+        c1, c2, c3, c4 = st.columns([1,1.6,2,1.2])
 
         with c1:
-            if st.button("+1", key=f"hb_{hid}_plus1"):
+            if st.button("＋1", key=f"hb_{hid}_plus1"):
                 inserir_habit_log({"habit_id": hid, "date": dia_sel.isoformat(), "amount": 1})
                 st.session_state.habit_logs = buscar_habit_logs()
+                st.toast("Registrado +1")
                 st.rerun()
 
         with c2:
@@ -220,6 +223,7 @@ def render_saude():
                 if qtd > 0:
                     inserir_habit_log({"habit_id": hid, "date": dia_sel.isoformat(), "amount": float(qtd)})
                     st.session_state.habit_logs = buscar_habit_logs()
+                    st.toast("Adicionado!")
                     st.rerun()
 
         with c3:
@@ -252,9 +256,7 @@ def render_saude():
 
         with c4:
             if st.button("Excluir", key=f"hb_{hid}_del"):
-                deletar_habito(hid)
-                st.session_state.habitos = buscar_habitos()
-                st.rerun()
+                confirmar_exclusao(f"dlg_hb_{hid}", "Confirmar exclusão", lambda: deletar_habito(hid))
 
         st.markdown("<br>", unsafe_allow_html=True)
 
@@ -311,9 +313,8 @@ def render_saude():
             if st.button("Salvar", key=f"lg_{lid}_save"):
                 atualizar_habit_log(lid, {"amount": float(novo)})
                 st.session_state.habit_logs = buscar_habit_logs()
+                st.toast("Log atualizado!")
                 st.rerun()
         with c3:
             if st.button("Excluir", key=f"lg_{lid}_del"):
-                deletar_habit_log(lid)
-                st.session_state.habit_logs = buscar_habit_logs()
-                st.rerun()
+                confirmar_exclusao(f"dlg_lg_{lid}", "Confirmar exclusão", lambda: deletar_habit_log(lid))
