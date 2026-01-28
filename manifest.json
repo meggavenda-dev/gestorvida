@@ -1,14 +1,14 @@
 {
-  "name": "Minha Casa Financeiro",
+  "name": "Minha Casa",
   "short_name": "Minha Casa",
-  "start_url": "/",
+  "start_url": ".",
   "display": "standalone",
   "background_color": "#F3F5F9",
   "theme_color": "#2563EB",
   "icons": [
     {
       "src": "https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f3e1.png",
-      "sizes": "192x192",
+      "sizes": "72x72",
       "type": "image/png"
     }
   ]
