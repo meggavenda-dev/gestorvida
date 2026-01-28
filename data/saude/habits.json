@@ -1,9 +1,21 @@
 [
   {
     "name": "Beber agua",
-    "target_per_day": 3,
+    "target_per_day": 0,
     "unit": "Garrafas de 700ml",
-    "id": 1
+    "id": 1,
+    "recurrence": {
+      "type": "weekly",
+      "days": [
+        "mon",
+        "tue",
+        "wed",
+        "thu",
+        "fri",
+        "sat",
+        "sun"
+      ]
+    }
   },
   {
     "name": "Malhar",
