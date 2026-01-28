@@ -242,25 +242,31 @@ def buscar_habitos() -> List[Dict[str, Any]]:
     obj, _ = gh_get_file(saude_path("habits"))
     return obj if isinstance(obj, list) else []
 
+
 def inserir_habito(reg: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
         new_id = (max([int(r.get("id", 0)) for r in obj]) + 1) if obj else 1
         reg['id'] = new_id
-        reg.setdefault('target_per_day', 1)
+        reg.setdefault('target_per_day', 0)
         reg.setdefault('unit', '')
+        reg.setdefault('recurrence', None)   # 👈 NOVO CAMPO
         obj.append(reg)
         return obj
     safe_update_json(saude_path("habits"), updater, commit_message="add habit")
 
-def atualizar_habito(habit_id: int, patch: Dict[str, Any]) -> None:
+
+def atualizar_habito(habit_id, patch):
     def updater(obj):
         obj = obj or []
         for r in obj:
             if int(r.get("id", -1)) == int(habit_id):
                 r.update(patch)
+                if "recurrence" not in r:
+                    r["recurrence"] = None
         return obj
-    safe_update_json(saude_path("habits"), updater, commit_message=f"update habit {habit_id}")
+    safe_update_json(...)
+
 
 def deletar_habito(habit_id: int) -> None:
     def updater(obj):
