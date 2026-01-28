@@ -27,26 +27,23 @@ _PT_TO_COD = {pt: code for pt, code in _DIAS_COD_PT}
 
 
 # ---------------------------------------------
-#  FUNÇÃO MAIS SEGURA PARA AVALIAR RECORRÊNCIA
+#  FUNÇÃO SEGURA PARA AVALIAR RECORRÊNCIA
 # ---------------------------------------------
 def habito_planejado_para_dia(habit: dict, dia: date) -> bool:
     """
     Retorna True se o hábito deve aparecer no dia.
-    - Se não tiver 'recurrence' => hábito diário => True
-    - Se recurrence for inválido ou incompleto => tratar como diário
-    - Se tipo for weekly => verifica se o dia está na lista
+    - Sem recurrence => diário => True
+    - Recurrence inválida => tratar como diário
+    - weekly => mostra somente nos dias listados
     """
-
     rec = habit.get("recurrence")
-
     if not rec or not isinstance(rec, dict):
         return True  # diário ou dado faltando
 
-    rtype = rec.get("type", None)
-    if rtype != "weekly":
-        return True  # tipos futuros tratados como diário
+    if rec.get("type") != "weekly":
+        return True  # outros tipos tratados como diário
 
-    dias = rec.get("days", None)
+    dias = rec.get("days")
     if not dias or not isinstance(dias, list):
         return True  # tratar como diário
 
@@ -61,14 +58,11 @@ def habito_planejado_para_dia(habit: dict, dia: date) -> bool:
 def formatar_recorrencia_pt(rec: dict | None) -> str:
     if not rec or not isinstance(rec, dict):
         return "Diário"
-
     if rec.get("type") != "weekly":
         return "Diário"
-
     dias = rec.get("days", [])
     if not dias:
         return "Semanal"
-
     dias_pt = [_COD_TO_PT.get(code, code) for code in dias]
     dias_pt = [d.capitalize() for d in dias_pt]
     return "Semanal (" + ", ".join(dias_pt) + ")"
@@ -82,7 +76,6 @@ def multiselect_dias_semana(label: str, default_codes: list[str] | None, key: st
         defaults_pt = [_COD_TO_PT.get(code) for code in default_codes if code in _COD_TO_PT]
     else:
         defaults_pt = []
-
     dias_pt = [pt for pt, _ in _DIAS_COD_PT]
     selecionados_pt = st.multiselect(label, dias_pt, default=defaults_pt, key=key)
     return [_PT_TO_COD[pt] for pt in selecionados_pt if pt in _PT_TO_COD]
@@ -101,29 +94,21 @@ def render_saude():
       </div>
     """, unsafe_allow_html=True)
 
-    # -----------------------------
     # Carregamento inicial
-    # -----------------------------
     if 'habitos' not in st.session_state:
         st.session_state.habitos = buscar_habitos()
-
     if 'habit_logs' not in st.session_state:
         st.session_state.habit_logs = buscar_habit_logs()
 
-    # -----------------------------
-    # FILTROS SUPERIORES
-    # -----------------------------
+    # Filtros superiores
     col_d1, col_d2, col_d3 = st.columns([1,1,1])
     dia_sel = col_d1.date_input("Dia", value=date.today(), key="saude_dia")
     mostrar_logs_rec = col_d2.selectbox("Histórico", ["7 dias", "14 dias", "30 dias"], index=1)
     mostrar_todos = col_d3.checkbox("Mostrar hábitos não planejados para o dia", value=False)
 
-    # -----------------------------
-    # FORM: ADICIONAR NOVO HÁBITO
-    # -----------------------------
+    # Novo hábito
     with st.expander("➕ Novo hábito", expanded=False):
         with st.form("form_novo_habito", clear_on_submit=True):
-
             nome = st.text_input("Nome")
             modo = st.radio("Tipo", ["Diário", "Semanal (recorrente)"], horizontal=True)
 
@@ -151,13 +136,10 @@ def render_saude():
                     st.session_state.habitos = buscar_habitos()
                     st.rerun()
 
-    # -----------------------------
-    # DADOS EM DATAFRAME
-    # -----------------------------
+    # DataFrames
     df_h = pd.DataFrame(st.session_state.habitos)
     df_l = pd.DataFrame(st.session_state.habit_logs)
 
-    # Garantir colunas
     for c in ["id","name","unit","target_per_day","recurrence"]:
         if c not in df_h.columns:
             df_h[c] = None
@@ -169,7 +151,6 @@ def render_saude():
         df_l["date"] = pd.to_datetime(df_l["date"], errors="coerce").dt.date
         soma_dia = df_l[df_l["date"] == dia_sel].groupby("habit_id")["amount"].sum().to_dict()
 
-    # Ordenar hábitos por nome
     if "name" in df_h.columns:
         df_h = df_h.sort_values("name", na_position="last")
 
@@ -177,18 +158,15 @@ def render_saude():
 
     algum = False
 
-    # -----------------------------
-    # LISTAGEM DOS HÁBITOS
-    # -----------------------------
+    # Lista de hábitos
     for _, hb in df_h.iterrows():
 
         hid = hb.get("id")
         if hid is None or pd.isna(hid):
             continue
-
         hid = int(hid)
 
-        # Verificar recorrência
+        # Recorrência
         if not mostrar_todos and not habito_planejado_para_dia(hb, dia_sel):
             continue
 
@@ -198,9 +176,7 @@ def render_saude():
         unit = hb.get("unit") or ""
         rec = hb.get("recurrence")
         alvo = int(hb.get("target_per_day", 0) or 0)
-
         atual = float(soma_dia.get(hid, 0.0))
-
         is_semanal = (isinstance(rec, dict) and rec.get("type") == "weekly")
 
         # Progresso
@@ -227,7 +203,6 @@ def render_saude():
             </div>
         </div>
         """, unsafe_allow_html=True)
-
         st.progress(progresso)
 
         # Ações
@@ -252,14 +227,14 @@ def render_saude():
                 novo_nome = st.text_input("Nome", value=nome, key=f"hb_{hid}_nome")
                 tipo_edit = st.radio("Tipo", ["Diário", "Semanal (recorrente)"],
                                      index=0 if not is_semanal else 1,
-                                     key=f"hb_{hid}_tipo")
+                                     key=f"hb_{hid}_tipo", horizontal=True)
 
                 if tipo_edit == "Diário":
                     novo_alvo = st.number_input("Meta por dia", min_value=0, value=alvo, step=1, key=f"hb_{hid}_meta")
                     novo_unit = st.text_input("Unidade", value=unit, key=f"hb_{hid}_unit")
                     novo_recurrence = None
                 else:
-                    dias_default = rec["days"] if is_semanal else []
+                    dias_default = rec.get("days") if is_semanal else []
                     new_days = multiselect_dias_semana("Dias da semana", dias_default, key=f"hb_{hid}_days")
                     novo_unit = st.text_input("Unidade", value=unit or "vezes", key=f"hb_{hid}_unit2")
                     novo_alvo = 0
@@ -287,10 +262,9 @@ def render_saude():
         st.info("Nenhum hábito para exibir (com os filtros atuais).")
 
     # -----------------------------
-    # HISTÓRICO DE LOGS
+    # HISTÓRICO DE LOGS RECENTES
     # -----------------------------
     st.divider()
-
     df_l = pd.DataFrame(st.session_state.habit_logs)
 
     if df_l.empty:
@@ -308,19 +282,25 @@ def render_saude():
         st.caption("Sem logs nesse período.")
         return
 
-    # Mapa de nomes
     df_h2 = pd.DataFrame(st.session_state.habitos)
-    nomes = {int(r["id"]): r["name"] for _, r in df_h2.dropna(subset=["id"]).iterrows()}
+    nomes = {}
+    if not df_h2.empty and "id" in df_h2.columns:
+        for _, r in df_h2.dropna(subset=["id"]).iterrows():
+            try:
+                nomes[int(r["id"])] = r.get("name") or f"Hábito {int(r['id'])}"
+            except Exception:
+                pass
 
     st.markdown("### Logs recentes")
 
     for _, lg in df_recent.sort_values("date", ascending=False).iterrows():
-
+        if "id" not in lg or pd.isna(lg["id"]):
+            continue
         lid = int(lg["id"])
-        hid = int(lg["habit_id"])
-        nome_h = nomes.get(hid, f"Hábito {hid}")
+        hid = int(lg["habit_id"]) if "habit_id" in lg and pd.notnull(lg["habit_id"]) else None
+        nome_h = nomes.get(hid, f"Hábito {hid}") if hid is not None else "(sem hábito)"
         data_txt = lg["date"].strftime("%d/%m/%Y")
-        amount = lg["amount"]
+        amount = float(lg.get("amount", 0) or 0)
 
         st.write(f"📝 {data_txt} — **{nome_h}** — {amount:g}")
 
