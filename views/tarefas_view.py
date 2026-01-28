@@ -10,7 +10,7 @@ from github_db import (
 )
 from ui_helpers import confirmar_exclusao
 
-STATUS_OPCOES = ['Não Iniciado', 'Em progresso', 'done', 'cancelled']
+STATUS_OPCOES = ['todo', 'doing', 'done', 'cancelled']
 
 def parse_due_at(x):
     try:
@@ -25,7 +25,7 @@ def filtrar_tasks(tasks, status_sel, resp_sel, janela):
     df['due_date'] = df.get('due_at', None).apply(parse_due_at)
     if status_sel:
         df = df[df['status'].isin(status_sel)]
-    if resp_sel != "Não Iniciados":
+    if resp_sel != "Todos":
         df = df[df['assignee'] == resp_sel]
     hoje = date.today()
     if janela == "Hoje":
@@ -62,9 +62,9 @@ def render_tarefas():
     else:
         df_all['due_date'] = df_all.get('due_at', None).apply(parse_due_at)
         total = len(df_all)
-        abertas = int((df_all['status'].isin(['Não Iniciado','Em progresso'])).sum())
-        hoje_qtd = int(((df_all['due_date'] == date.today()) & df_all['status'].isin(['Não Iniciado','Em progresso'])).sum())
-        atrasadas = int(((df_all['due_date'].notna()) & (df_all['due_date'] < date.today()) & df_all['status'].isin(['Não Iniciado','Em progresso'])).sum())
+        abertas = int((df_all['status'].isin(['todo','doing'])).sum())
+        hoje_qtd = int(((df_all['due_date'] == date.today()) & df_all['status'].isin(['todo','doing'])).sum())
+        atrasadas = int(((df_all['due_date'].notna()) & (df_all['due_date'] < date.today()) & df_all['status'].isin(['todo','doing'])).sum())
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Total", str(total))
@@ -90,7 +90,7 @@ def render_tarefas():
                     "title": title.strip(),
                     "description": desc.strip(),
                     "due_at": due.isoformat() if due else None,
-                    "status": "Não Iniciado",
+                    "status": "todo",
                     "assignee": assignee,
                     "created_at": datetime.utcnow().isoformat()
                 })
@@ -102,9 +102,9 @@ def render_tarefas():
 
     # Filtros
     col_f1, col_f2, col_f3 = st.columns([1.5, 1.5, 1])
-    status_sel = col_f1.multiselect("Status", STATUS_OPCOES, default=['Não Iniciado', 'Em progresso'])
-    resp_sel = col_f2.selectbox("Responsável", options=["Não Iniciados"] + PESSOAS, index=0)
-    janela = col_f3.selectbox("Vencimento", options=["Não Iniciados", "Hoje", "Próximos 7 dias", "Próximos 30 dias"], index=0)
+    status_sel = col_f1.multiselect("Status", STATUS_OPCOES, default=['todo', 'doing'])
+    resp_sel = col_f2.selectbox("Responsável", options=["Todos"] + PESSOAS, index=0)
+    janela = col_f3.selectbox("Vencimento", options=["Todos", "Hoje", "Próximos 7 dias", "Próximos 30 dias"], index=0)
 
     st.markdown("### Lista de Tarefas")
     df_view = filtrar_tasks(st.session_state.tasks, status_sel, resp_sel, janela)
@@ -115,10 +115,10 @@ def render_tarefas():
 
     for _, row in df_view.iterrows():
         s = row['status']
-        s_class = s if s in ['Não Iniciado','Em progresso','done','cancelled'] else 'Não Iniciado'
+        s_class = s if s in ['todo','doing','done','cancelled'] else 'todo'
         due_txt = row['due_date'].strftime('%d/%m/%Y') if pd.notnull(row['due_date']) else '—'
         overdue_flag = ""
-        if row['due_date'] and row['status'] in ['Não Iniciado','Em progresso']:
+        if row['due_date'] and row['status'] in ['todo','doing']:
             diff = (row['due_date'] - date.today()).days
             if diff < 0:
                 overdue_flag = f" • 🔴 Atrasada há {-diff}d"
@@ -147,11 +147,11 @@ def render_tarefas():
                 st.session_state.tasks = buscar_tasks(); st.rerun()
         with c2:
             col_bs1, col_bs2 = st.columns(2)
-            if col_bs1.button("⏳ Não Iniciado", key=f"tsk_to_{row['id']}"):
-                atualizar_task(int(row['id']), {"status": "Não Iniciado"})
+            if col_bs1.button("⏳ TODO", key=f"tsk_to_{row['id']}"):
+                atualizar_task(int(row['id']), {"status": "todo"})
                 st.session_state.tasks = buscar_tasks(); st.rerun()
-            if col_bs2.button("🔄 Em progresso", key=f"tsk_do_{row['id']}"):
-                atualizar_task(int(row['id']), {"status": "Em progresso"})
+            if col_bs2.button("🔄 DOING", key=f"tsk_do_{row['id']}"):
+                atualizar_task(int(row['id']), {"status": "doing"})
                 st.session_state.tasks = buscar_tasks(); st.rerun()
         with c3:
             with st.expander("Editar"):
