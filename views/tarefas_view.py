@@ -190,8 +190,14 @@ def render_tarefas():
                     st.toast("Atualizado!")
                     st.session_state.tasks = buscar_tasks(); st.rerun()
 
+       
         with c4:
-            st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
-            if st.button("Excluir", key=f"tsk_del_{row['id']}"]):
-                confirmar_exclusao(f"dlg_tsk_{row['id']}", "Confirmar exclusão", lambda: deletar_task(int(row['id'])))
-            st.markdown('</div>', unsafe_allow_html=True)
+                    st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
+                    if st.button("Excluir", key=f"tsk_del_{row['id']}"):
+                        confirmar_exclusao(
+                            f"dlg_tsk_{row['id']}",
+                            "Confirmar exclusão",
+                            lambda: deletar_task(int(row['id']))
+                        )
+                    st.markdown('</div>', unsafe_allow_html=True)
+
