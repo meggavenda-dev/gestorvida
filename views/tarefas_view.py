@@ -10,7 +10,16 @@ from github_db import (
 )
 from ui_helpers import confirmar_exclusao
 
+# Status internos (mantêm os valores originais no banco)
 STATUS_OPCOES = ['todo', 'doing', 'done', 'cancelled']
+
+# Mapeamento → texto que aparece para o usuário
+STATUS_LABELS = {
+    "todo": "Não Iniciado",
+    "doing": "Em Progresso",
+    "done": "Finalizado",
+    "cancelled": "Cancelado"
+}
 
 def parse_due_at(x):
     try:
@@ -64,7 +73,9 @@ def render_tarefas():
         total = len(df_all)
         abertas = int((df_all['status'].isin(['todo','doing'])).sum())
         hoje_qtd = int(((df_all['due_date'] == date.today()) & df_all['status'].isin(['todo','doing'])).sum())
-        atrasadas = int(((df_all['due_date'].notna()) & (df_all['due_date'] < date.today()) & df_all['status'].isin(['todo','doing'])).sum())
+        atrasadas = int(((df_all['due_date'].notna()) &
+                         (df_all['due_date'] < date.today()) &
+                         df_all['status'].isin(['todo','doing'])).sum())
 
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Total", str(total))
@@ -102,7 +113,12 @@ def render_tarefas():
 
     # Filtros
     col_f1, col_f2, col_f3 = st.columns([1.5, 1.5, 1])
-    status_sel = col_f1.multiselect("Status", STATUS_OPCOES, default=['todo', 'doing'])
+    status_sel = col_f1.multiselect(
+        "Status",
+        STATUS_OPCOES,
+        default=['todo', 'doing'],
+        format_func=lambda x: STATUS_LABELS[x]
+    )
     resp_sel = col_f2.selectbox("Responsável", options=["Todos"] + PESSOAS, index=0)
     janela = col_f3.selectbox("Vencimento", options=["Todos", "Hoje", "Próximos 7 dias", "Próximos 30 dias"], index=0)
 
@@ -116,6 +132,8 @@ def render_tarefas():
     for _, row in df_view.iterrows():
         s = row['status']
         s_class = s if s in ['todo','doing','done','cancelled'] else 'todo'
+        label_status = STATUS_LABELS.get(s, s)
+
         due_txt = row['due_date'].strftime('%d/%m/%Y') if pd.notnull(row['due_date']) else '—'
         overdue_flag = ""
         if row['due_date'] and row['status'] in ['todo','doing']:
@@ -132,27 +150,30 @@ def render_tarefas():
             <div class="tk-info">
               <div class="tk-title">{row.get('title','(sem título)')}</div>
               <div class="tk-meta">Resp.: <b>{row.get('assignee','Ambos')}</b> • Venc.: <b>{due_txt}</b>{overdue_flag}</div>
-              <div class="status-badge {s_class}">{s.upper()}</div>
+              <div class="status-badge {s_class}">{label_status}</div>
               <div class="tk-meta">{(row.get('description') or '').strip()}</div>
             </div>
           </div>
         </div>
         """, unsafe_allow_html=True)
 
+        # Botões de ação
         c1, c2, c3, c4 = st.columns([1,1.4,2,1])
         with c1:
-            if s != 'done' and st.button("✔ Concluir", key=f"tsk_done_{row['id']}"):
+            if s != 'done' and st.button("✔ Finalizar", key=f"tsk_done_{row['id']}"):
                 atualizar_task(int(row['id']), {"status": "done"})
-                st.toast("Concluída!")
+                st.toast("Tarefa finalizada!")
                 st.session_state.tasks = buscar_tasks(); st.rerun()
+
         with c2:
             col_bs1, col_bs2 = st.columns(2)
-            if col_bs1.button("⏳ TODO", key=f"tsk_to_{row['id']}"):
+            if col_bs1.button("⏳ Não Iniciado", key=f"tsk_to_{row['id']}"):
                 atualizar_task(int(row['id']), {"status": "todo"})
                 st.session_state.tasks = buscar_tasks(); st.rerun()
-            if col_bs2.button("🔄 DOING", key=f"tsk_do_{row['id']}"):
+            if col_bs2.button("🔄 Em Progresso", key=f"tsk_do_{row['id']}"):
                 atualizar_task(int(row['id']), {"status": "doing"})
                 st.session_state.tasks = buscar_tasks(); st.rerun()
+
         with c3:
             with st.expander("Editar"):
                 nt = st.text_input("Título", value=row.get('title',''), key=f"tsk_et_{row['id']}")
@@ -168,8 +189,9 @@ def render_tarefas():
                     })
                     st.toast("Atualizado!")
                     st.session_state.tasks = buscar_tasks(); st.rerun()
+
         with c4:
             st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
-            if st.button("Excluir", key=f"tsk_del_{row['id']}"):
+            if st.button("Excluir", key=f"tsk_del_{row['id']}"]):
                 confirmar_exclusao(f"dlg_tsk_{row['id']}", "Confirmar exclusão", lambda: deletar_task(int(row['id'])))
             st.markdown('</div>', unsafe_allow_html=True)
