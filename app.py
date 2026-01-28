@@ -1,5 +1,55 @@
 # app_financeiro_streamlit.py
 # -*- coding: utf-8 -*-
+"""
+Gestor da Vida – Aba Financeiro (Fase de Testes com GitHub como “banco”)
+
+✅ Visão Geral da Arquitetura (para a fase seguinte):
+1) Frontend Mobile
+   - Opção A (recomendada): React Native (Expo)
+     Vantagens: push notifications nativas, acesso a calendário/lembranças, câmera, HealthKit/Google Fit (no futuro),
+     offline-first robusto. Navegação em abas com expo-router ou @react-navigation.
+   - Opção B: PWA (Web)
+     Útil como atalho, mas web push no iOS exige PWA instalada + service worker + manifest válidos,
+     e Streamlit não foi pensado para service worker (servidor/proxy custom).
+
+   **Conclusão**: Para notificações confiáveis, background sync e integrações de saúde/calendário, RN (Expo) é superior.
+
+2) Backend & Banco
+   - Supabase (Postgres + Auth + Storage + RLS) para produção:
+     Migrar autenticação de usuarios + bcrypt → Supabase Auth; usar RLS por usuário/família (household_id).
+     Tabelas por domínio: financeiro, tarefas/eventos, saúde, estudos.
+
+   - (Opcional) Microserviço Python (FastAPI) para PDF/relatórios (reaproveitando ReportLab).
+
+3) Sincronização & Offline
+   - App RN mantém cache offline (SQLite / WatermelonDB / MMKV).
+   - Sincroniza com Supabase via supabase-js + realtime (se necessário).
+
+4) Notificações & Agenda
+   - Firebase Cloud Messaging (Android) e APNs (iOS) via Expo Notifications.
+   - Futuro: Google Calendar / Microsoft 365 (Graph).
+
+5) Privacidade e Multiusuário
+   - Modelo “família/casa” (households): Guilherme e Alynne.
+   - RLS filtra por household_id.
+
+🗺️ Roadmap (enxuto e incremental)
+- M0 – Base e Financeiro (2–3 semanas)
+  Criar app Expo com abas; Supabase Auth; integrar Financeiro via WebView (rápido);
+  backend (Edge Function/FASTAPI) para PDFs/Excel, se necessário.
+- M1 – Tarefas/Reuniões (1–2 semanas)
+  CRUD de tarefas, prazos, atribuição (Guilherme/Alynne/Ambos), lembretes (push), agenda simples.
+- M2 – Saúde/Hábitos (1–2 semanas)
+  Hábitos/checagens; futuro: Google Fit/HealthKit.
+- M3 – Estudos (2 semanas)
+  Materiais, sessões, revisão espaçada (SM-2 simplificado).
+- M4 – UI/UX & PWA/Nativo
+  Unificar tema; performance; portar gradualmente o Financeiro para telas nativas RN.
+
+Este arquivo implementa a **aba Financeiro** em Streamlit, usando **GitHub JSON** como persistência.
+Quando migrar para Supabase, basta substituir as funções de persistência (`buscar_*`, `inserir_*`, etc.).
+"""
+
 import streamlit as st
 import pandas as pd
 from datetime import date
