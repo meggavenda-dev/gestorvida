@@ -237,7 +237,7 @@ def deletar_task(task_id: int) -> None:
     safe_update_json(tasks_path("tasks"), updater, commit_message=f"delete task {task_id}")
 
 # =================================================
-#                       SAÚDE (ATUALIZADA)
+#                       SAÚDE (LEGADO: HÁBITOS)
 # =================================================
 def _ensure_recurrence_dict_or_none(value: Any) -> Optional[dict]:
     """
@@ -402,6 +402,198 @@ def deletar_habit_log(log_id: int) -> None:
         obj = obj or []
         return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(log_id))]
     safe_update_json(saude_path("habit_logs"), updater, commit_message=f"delete habit_log {log_id}")
+
+# =================================================
+#          SAÚDE (NOVA): PESO / ÁGUA / TREINOS / CONFIG
+# =================================================
+# --------- PESO ----------
+def buscar_peso_logs() -> List[Dict[str, Any]]:
+    obj, _ = gh_get_file(saude_path("weight_logs"))
+    if not obj or not isinstance(obj, list):
+        return []
+    out = []
+    for r in obj:
+        if not isinstance(r, dict):
+            continue
+        try:
+            rid = int(r.get("id"))
+            w = float(r.get("weight_kg"))
+        except Exception:
+            continue
+        out.append({
+            "id": rid,
+            "date": r.get("date"),
+            "weight_kg": w,
+            "body_fat_pct": float(r.get("body_fat_pct")) if r.get("body_fat_pct") not in (None, "") else None,
+            "waist_cm": float(r.get("waist_cm")) if r.get("waist_cm") not in (None, "") else None,
+        })
+    return out
+
+def inserir_peso(reg: Dict[str, Any]) -> None:
+    def updater(obj):
+        obj = obj or []
+        new_id = (max([int(x.get("id", 0)) for x in obj if isinstance(x, dict)]) + 1) if obj else 1
+        date_str = str(reg.get("date"))
+        w = float(reg.get("weight_kg"))
+        bf = reg.get("body_fat_pct")
+        wc = reg.get("waist_cm")
+        row = {"id": new_id, "date": date_str, "weight_kg": w}
+        if bf not in (None, ""): row["body_fat_pct"] = float(bf)
+        if wc not in (None, ""): row["waist_cm"] = float(wc)
+        obj.append(row)
+        return obj
+    safe_update_json(saude_path("weight_logs"), updater, commit_message="add weight_log")
+
+def atualizar_peso(log_id: int, patch: Dict[str, Any]) -> None:
+    def updater(obj):
+        obj = obj or []
+        for r in obj:
+            if isinstance(r, dict) and int(r.get("id", -1)) == int(log_id):
+                if "date" in patch and patch["date"]:
+                    r["date"] = str(patch["date"])
+                if "weight_kg" in patch:
+                    r["weight_kg"] = float(patch["weight_kg"])
+                if "body_fat_pct" in patch:
+                    r["body_fat_pct"] = float(patch["body_fat_pct"]) if patch["body_fat_pct"] not in (None, "") else None
+                if "waist_cm" in patch:
+                    r["waist_cm"] = float(patch["waist_cm"]) if patch["waist_cm"] not in (None, "") else None
+        return obj
+    safe_update_json(saude_path("weight_logs"), updater, commit_message=f"update weight_log {log_id}")
+
+def deletar_peso(log_id: int) -> None:
+    def updater(obj):
+        obj = obj or []
+        return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(log_id))]
+    safe_update_json(saude_path("weight_logs"), updater, commit_message=f"delete weight_log {log_id}")
+
+# --------- ÁGUA ----------
+def buscar_agua_logs() -> List[Dict[str, Any]]:
+    obj, _ = gh_get_file(saude_path("water_logs"))
+    if not obj or not isinstance(obj, list):
+        return []
+    out = []
+    for r in obj:
+        if not isinstance(r, dict):
+            continue
+        try:
+            rid = int(r.get("id"))
+            amt = float(r.get("amount_ml"))
+        except Exception:
+            continue
+        out.append({"id": rid, "date": r.get("date"), "amount_ml": amt})
+    return out
+
+def inserir_agua(reg: Dict[str, Any]) -> None:
+    def updater(obj):
+        obj = obj or []
+        new_id = (max([int(x.get("id", 0)) for x in obj if isinstance(x, dict)]) + 1) if obj else 1
+        date_str = str(reg.get("date"))
+        amt = float(reg.get("amount_ml"))
+        obj.append({"id": new_id, "date": date_str, "amount_ml": amt})
+        return obj
+    safe_update_json(saude_path("water_logs"), updater, commit_message="add water_log")
+
+def atualizar_agua(log_id: int, patch: Dict[str, Any]) -> None:
+    def updater(obj):
+        obj = obj or []
+        for r in obj:
+            if isinstance(r, dict) and int(r.get("id", -1)) == int(log_id):
+                if "date" in patch and patch["date"]:
+                    r["date"] = str(patch["date"])
+                if "amount_ml" in patch:
+                    r["amount_ml"] = float(patch["amount_ml"])
+        return obj
+    safe_update_json(saude_path("water_logs"), updater, commit_message=f"update water_log {log_id}")
+
+def deletar_agua(log_id: int) -> None:
+    def updater(obj):
+        obj = obj or []
+        return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(log_id))]
+    safe_update_json(saude_path("water_logs"), updater, commit_message=f"delete water_log {log_id}")
+
+# --------- CONFIG (ex.: meta de água) ----------
+def buscar_saude_config() -> Dict[str, Any]:
+    obj, _ = gh_get_file(saude_path("saude_config"))
+    return obj if isinstance(obj, dict) else {}
+
+def upsert_saude_config(patch: Dict[str, Any]) -> None:
+    def updater(obj):
+        obj = obj or {}
+        out = dict(obj)
+        for k, v in patch.items():
+            out[k] = v
+        return out
+    safe_update_json(saude_path("saude_config"), updater, commit_message="upsert saude_config")
+
+# --------- TREINOS (logs simples de séries) ----------
+def buscar_workout_logs() -> List[Dict[str, Any]]:
+    obj, _ = gh_get_file(saude_path("workout_logs"))
+    if not obj or not isinstance(obj, list):
+        return []
+    out = []
+    for r in obj:
+        if not isinstance(r, dict):
+            continue
+        try:
+            rid = int(r.get("id"))
+            reps = int(r.get("reps"))
+            w = float(r.get("weight_kg") or 0.0)
+        except Exception:
+            continue
+        out.append({
+            "id": rid,
+            "date": r.get("date"),
+            "exercise": (r.get("exercise") or "").strip(),
+            "reps": reps,
+            "weight_kg": w,
+            "rpe": float(r.get("rpe")) if r.get("rpe") not in (None, "") else None,
+            "notes": r.get("notes") or ""
+        })
+    return out
+
+def inserir_workout_log(reg: Dict[str, Any]) -> None:
+    def updater(obj):
+        obj = obj or []
+        new_id = (max([int(x.get("id", 0)) for x in obj if isinstance(x, dict)]) + 1) if obj else 1
+        row = {
+            "id": new_id,
+            "date": str(reg.get("date")),
+            "exercise": (reg.get("exercise") or "").strip(),
+            "reps": int(reg.get("reps")),
+            "weight_kg": float(reg.get("weight_kg") or 0.0),
+            "notes": (reg.get("notes") or "").strip()
+        }
+        if reg.get("rpe") not in (None, ""):
+            row["rpe"] = float(reg.get("rpe"))
+        obj.append(row)
+        return obj
+    safe_update_json(saude_path("workout_logs"), updater, commit_message="add workout_log")
+
+def atualizar_workout_log(log_id: int, patch: Dict[str, Any]) -> None:
+    def updater(obj):
+        obj = obj or []
+        for r in obj:
+            if isinstance(r, dict) and int(r.get("id", -1)) == int(log_id):
+                if "date" in patch and patch["date"]:
+                    r["date"] = str(patch["date"])
+                if "exercise" in patch:
+                    r["exercise"] = (patch["exercise"] or "").strip()
+                if "reps" in patch:
+                    r["reps"] = int(patch["reps"])
+                if "weight_kg" in patch:
+                    r["weight_kg"] = float(patch["weight_kg"])
+                if "rpe" in patch:
+                    r["rpe"] = float(patch["rpe"]) if patch["rpe"] not in (None, "") else None
+                if "notes" in patch:
+                    r["notes"] = (patch["notes"] or "").strip()
+        return obj
+    safe_update_json(saude_path("workout_logs"), updater, commit_message=f"update workout_log {log_id}")
+
+def deletar_workout_log(log_id: int) -> None:
+    def updater(obj):
+        obj = obj or []
+        return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(log_id))]
+    safe_update_json(saude_path("workout_logs"), updater, commit_message=f"delete workout_log {log_id}")
 
 # =================================================
 #                      ESTUDOS
