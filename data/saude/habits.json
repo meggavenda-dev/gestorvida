@@ -4,5 +4,19 @@
     "target_per_day": 3,
     "unit": "Garrafas de 700ml",
     "id": 1
+  },
+  {
+    "name": "Malhar",
+    "target_per_day": 0,
+    "unit": "vezes",
+    "recurrence": {
+      "type": "weekly",
+      "days": [
+        "mon",
+        "wed",
+        "fri"
+      ]
+    },
+    "id": 2
   }
 ]
