@@ -136,9 +136,10 @@ def render_saude():
             st.metric("Água (hoje)", f"{int(agua_hoje)} / {agua_goal} ml")
             st.progress(prog)
             ca1, ca2, ca3 = st.columns(3)
-            if ca1.button("+250 ml"): _add_agua_quick(250)
-            if ca2.button("+500 ml"): _add_agua_quick(500)
-            if ca3.button("+750 ml"): _add_agua_quick(750)
+            # 🔑 KEYS ÚNICAS NO PAINEL
+            if ca1.button("+250 ml", key="painel_add_agua_250"): _add_agua_quick(250)
+            if ca2.button("+500 ml", key="painel_add_agua_500"): _add_agua_quick(500)
+            if ca3.button("+750 ml", key="painel_add_agua_750"): _add_agua_quick(750)
 
         with c3:
             st.metric("Treinos (7 dias)", f"{sessoes_7d} dia(s)", delta=f"Vol.: {_formata_val(volume_7d,' kg')}")
@@ -210,18 +211,19 @@ def render_saude():
         st.markdown("### Meta diária e registro")
         col_a1, col_a2 = st.columns([1,2])
         with col_a1:
-            meta = st.number_input("Meta diária (ml)", min_value=0, step=100, value=int(agua_goal))
-            if st.button("Salvar meta"):
+            meta = st.number_input("Meta diária (ml)", min_value=0, step=100, value=int(agua_goal), key="agua_meta_input")
+            if st.button("Salvar meta", key="agua_meta_save"):
                 upsert_saude_config({"water_goal_ml": int(meta)})
                 st.session_state.saude_cfg = buscar_saude_config()
                 st.toast("Meta atualizada")
         with col_a2:
             st.caption("Toques rápidos:")
             cqa, cqb, cqc, cqd = st.columns(4)
-            if cqa.button("+250 ml"): _add_agua_quick(250)
-            if cqb.button("+500 ml"): _add_agua_quick(500)
-            if cqc.button("+750 ml"): _add_agua_quick(750)
-            if cqd.button("+1000 ml"): _add_agua_quick(1000)
+            # 🔑 KEYS ÚNICAS NA ABA ÁGUA (primeiro bloco)
+            if cqa.button("+250 ml", key="agua_add_250_top"): _add_agua_quick(250)
+            if cqb.button("+500 ml", key="agua_add_500_top"): _add_agua_quick(500)
+            if cqc.button("+750 ml", key="agua_add_750_top"): _add_agua_quick(750)
+            if cqd.button("+1000 ml", key="agua_add_1000_top"): _add_agua_quick(1000)
 
         # Dia atual
         dfa = pd.DataFrame(st.session_state.agua_logs)
@@ -236,7 +238,7 @@ def render_saude():
         st.metric("Consumido", f"{int(total_hoje)} / {int(st.session_state.saude_cfg.get('water_goal_ml', 2000))} ml")
         st.progress(min(total_hoje / max(1, int(st.session_state.saude_cfg.get('water_goal_ml', 2000))), 1.0))
         with st.form("form_agua_add", clear_on_submit=True):
-            amt = st.number_input("Adicionar (ml)", min_value=0, step=50, value=250)
+            amt = st.number_input("Adicionar (ml)", min_value=0, step=50, value=250, key="agua_amt_input")
             if st.form_submit_button("Adicionar"):
                 inserir_agua({"date": hoje.isoformat(), "amount_ml": int(amt)})
                 st.session_state.agua_logs = buscar_agua_logs()
@@ -280,12 +282,12 @@ def render_saude():
         st.markdown("### Registrar série rápida")
         with st.form("form_w_quick", clear_on_submit=True):
             colw1, colw2, colw3, colw4 = st.columns([2,1,1,1])
-            w_dt = colw1.date_input("Data", value=date.today())
-            w_ex = colw1.text_input("Exercício", placeholder="Ex.: Supino reto")
-            w_reps = colw2.number_input("Reps", min_value=1, step=1, value=8)
-            w_kg = colw3.number_input("Carga (kg)", min_value=0.0, step=0.5, value=0.0)
-            w_rpe = colw4.number_input("RPE", min_value=0.0, max_value=10.0, step=0.5, value=0.0)
-            w_nt = st.text_input("Notas (opcional)", value="")
+            w_dt = colw1.date_input("Data", value=date.today(), key="w_dt")
+            w_ex = colw1.text_input("Exercício", placeholder="Ex.: Supino reto", key="w_ex")
+            w_reps = colw2.number_input("Reps", min_value=1, step=1, value=8, key="w_reps")
+            w_kg = colw3.number_input("Carga (kg)", min_value=0.0, step=0.5, value=0.0, key="w_kg")
+            w_rpe = colw4.number_input("RPE", min_value=0.0, max_value=10.0, step=0.5, value=0.0, key="w_rpe")
+            w_nt = st.text_input("Notas (opcional)", value="", key="w_nt")
             if st.form_submit_button("Salvar"):
                 inserir_workout_log({
                     "date": w_dt.isoformat(),
