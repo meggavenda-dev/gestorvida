@@ -12,11 +12,12 @@
     "title": "Queimados - Pagamento",
     "description": "Atualizar os pareceres, não foram lançados no sistema.\nImportar a cirurgias do dia 22/01/2026 até 28/01/2026.",
     "due_at": "2026-01-29",
-    "status": "doing",
+    "status": "done",
     "assignee": "Guilherme",
     "created_at": "2026-01-28T14:18:24.124337",
     "id": 2,
-    "updated_at": "2026-01-29T19:32:00.095130Z"
+    "updated_at": "2026-01-29T19:32:00.095130Z",
+    "completed_at": "2026-01-29T22:57:39.637801Z"
   },
   {
     "title": "Arrumar o limpador de vidro do carro",
