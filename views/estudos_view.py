@@ -135,18 +135,27 @@ def _week_minutes(df_logs):
     dfw = df[(df["start_date_local"] >= ini) & (df["start_date_local"] <= hoje)]
     return int(dfw["duration_min"].sum())
 
+
 def _streak_days(df_logs, min_minutes_day=10):
     """
-    Streak silencioso: conta dias consecutivos (até hoje) onde soma >= min_minutes_day.
-    Se falhar, zera, mas histórico permanece.
+    Streak silencioso: dias consecutivos (até hoje) onde soma do dia >= 10 min.
+    Se existir counts_for_streak, usa a flag.
+    Se não existir, considera sessão conta se duration_min >= 10.
     """
     df = df_logs.dropna(subset=["start_date_local"]).copy()
     if df.empty:
         return 0
 
-    g = df.groupby("start_date_local")["duration_min"].sum()
-    if g.empty:
-        return 0
+    # compat: se a coluna não existir, cria
+    if "counts_for_streak" not in df.columns:
+        df["counts_for_streak"] = df["duration_min"].apply(lambda x: int(x) >= 10)
+
+    # soma apenas os minutos que contam para streak
+    df["min_streak"] = df.apply(
+        lambda r: int(r["duration_min"]) if bool(r["counts_for_streak"]) else 0,
+        axis=1
+    )
+    g = df.groupby("start_date_local")["min_streak"].sum()
 
     hoje = date.today()
     streak = 0
@@ -158,6 +167,7 @@ def _streak_days(df_logs, min_minutes_day=10):
         else:
             break
     return streak
+
 
 def _pick_today_topics(df_s, df_t, df_logs, limit=3):
     """
@@ -578,12 +588,20 @@ def _screen_topics(df_s, df_t):
             if r2.button("⬇️ Descer", key=f"t_down_{tid}"):
                 _move_topic(df_t, tid, direction=+1)
                 recarregar()
-                st.rerun()
+                st.rerun()            
+            
             if r3.button("Salvar", key=f"t_save_{tid}"):
+                hoje = date.today()
+                planned_out = new_date.isoformat() if new_date else None
+            
+                # ✅ coerência: revisão sem data vira +2 dias automaticamente
+                if bool(new_review) and planned_out is None:
+                    planned_out = (hoje + timedelta(days=2)).isoformat()
+            
                 atualizar_estudos_topic(tid, {
                     "title": new_title.strip(),
                     "status": st_sel,
-                    "planned_date": new_date.isoformat() if new_date else None,
+                    "planned_date": planned_out,
                     "planned_weekdays": new_days,
                     "review": bool(new_review)
                 })
@@ -681,8 +699,10 @@ def _finish_session(topic_id: int, result: str):
     if start is None:
         return
     end = datetime.utcnow()
+    
     dur = int((end - start).total_seconds() // 60)
-    dur = max(1, dur)
+    dur = max(0, dur)  # ✅ agora pode ser 0
+
 
     inserir_estudos_log({
         "topic_id": int(topic_id),
