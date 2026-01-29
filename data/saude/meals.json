@@ -1,1 +1,9 @@
-[]
+[
+  {
+    "id": 1,
+    "date": "2026-01-29",
+    "meal": "cafe",
+    "quality": "equilibrada",
+    "notes": ""
+  }
+]
