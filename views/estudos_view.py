@@ -10,6 +10,7 @@ from github_db import (
     buscar_estudos_logs, inserir_estudos_log
 )
 
+
 from ui_helpers import confirmar_exclusao
 
 STATUS_LABEL = {"todo": "Não estudado", "doing": "Estudando", "done": "Estudado"}
