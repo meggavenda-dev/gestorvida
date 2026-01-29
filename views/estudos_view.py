@@ -148,6 +148,45 @@ def _week_minutes(df_logs):
     return int(dfw["duration_min"].sum())
 
 
+def _weekly_summary(df_t, df_logs):
+    hoje = date.today()
+    ini = hoje - timedelta(days=6)
+
+    # logs da semana (por data local)
+    dfl = df_logs.dropna(subset=["start_date_local"]).copy()
+    dfw = dfl[(dfl["start_date_local"] >= ini) & (dfl["start_date_local"] <= hoje)]
+    week_min = int(dfw["duration_min"].sum()) if not dfw.empty else 0
+
+    # dias válidos para streak (>=10) - usa counts_for_streak se existir
+    if "counts_for_streak" in dfw.columns:
+        streak_days_week = int(dfw.groupby("start_date_local")["counts_for_streak"].any().sum())
+    else:
+        # fallback
+        streak_days_week = int((dfw.groupby("start_date_local")["duration_min"].sum() >= 10).sum()) if not dfw.empty else 0
+
+    # concluídos na semana: sem "completed_at" no tópico, usamos logs result="all"
+    completed_ids = set()
+    if not dfw.empty and "result" in dfw.columns:
+        completed_ids = set(dfw[dfw["result"] == "all"]["topic_id"].dropna().astype(int).tolist())
+
+    done_week = len(completed_ids)
+
+    # atrasados hoje (conforme seu modelo)
+    overdue = 0
+    if not df_t.empty and "planned_date_dt" in df_t.columns:
+        overdue = int(((df_t["active"] == True) & (df_t["status"] != "done") &
+                      (df_t["planned_date_dt"].notna()) & (df_t["planned_date_dt"] < hoje)).sum())
+
+    return {
+        "week_min": week_min,
+        "done_week": done_week,
+        "streak_days_week": streak_days_week,
+        "overdue": overdue,
+        "range": f"{ini.strftime('%d/%m')}–{hoje.strftime('%d/%m')}"
+    }
+
+
+
 def _streak_days(df_logs, min_minutes_day=10):
     """
     Streak silencioso: dias consecutivos (até hoje) onde soma do dia >= 10 min.
@@ -179,6 +218,43 @@ def _streak_days(df_logs, min_minutes_day=10):
         else:
             break
     return streak
+
+
+def _daily_insight(df_t, df_logs, df_sug):
+    """
+    Retorna 1 frase curta e objetiva.
+    Nada motivacional, só contexto + próximo passo.
+    """
+    hoje = date.today()
+
+    # quantos atrasados existem no total
+    overdue = 0
+    if not df_t.empty and "planned_date_dt" in df_t.columns:
+        overdue = int(((df_t["active"] == True) & (df_t["status"] != "done") &
+                      (df_t["planned_date_dt"].notna()) & (df_t["planned_date_dt"] < hoje)).sum())
+
+    week_min = _week_minutes(df_logs)
+    streak = _streak_days(df_logs, min_minutes_day=10)
+
+    sug_n = 0 if df_sug is None or df_sug.empty else len(df_sug)
+
+    # 1) Se tem atrasado, prioridade nisso
+    if overdue > 0:
+        return f"Hoje há {overdue} pendência(s) atrasada(s). Concluir 1 já destrava o fluxo."
+
+    # 2) Se semana muito baixa, chamar 10min (seco)
+    if week_min < 20:
+        return "Pouco tempo na semana até aqui. 10 minutos hoje já contam para o streak."
+
+    # 3) Se tem sugestões, refletir
+    if sug_n > 0:
+        return f"Seu foco de hoje está pronto: {sug_n} tópico(s). Comece por 1."
+
+    # 4) Se tudo limpo, sugerir avanço livre
+    if streak > 0:
+        return "Tudo em dia. Se quiser, avance em um tópico pendente sem planejamento."
+    return "Tudo em dia. Se quiser, avance em um tópico curto."
+
 
 
 def _pick_today_topics(df_s, df_t, df_logs, limit=3):
@@ -350,8 +426,33 @@ def _screen_today(df_s, df_t, df_l):
     # Sugestões (1–3)
     sug = _pick_today_topics(df_s, df_t, df_l, limit=3)
 
+    # ✅ Insight diário (1 frase)
+    insight = _daily_insight(df_t, df_l, sug)
+    st.caption(f"🧠 {insight}")
+
+    # ✅ Resumo semanal (seco) — recomendado mostrar só se tiver algo
+    # Opção C: só aparece se existir tempo ou concluídos/atrasos
+    ws = _weekly_summary(df_t, df_l)
+    show_week = (ws["week_min"] > 0) or (ws["done_week"] > 0) or (ws["overdue"] > 0)
+    if show_week:
+        with st.expander("📌 Resumo da semana (seco)", expanded=False):
+            st.write(f"Período: **{ws['range']}**")
+            st.write(f"Tempo total: **{ws['week_min']} min**")
+            st.write(f"Concluídos (via sessões 'Estudei tudo'): **{ws['done_week']}**")
+            st.write(f"Dias com estudo válido (>=10 min): **{ws['streak_days_week']}**")
+            if ws["overdue"] > 0:
+                st.write(f"Pendências atrasadas hoje: **{ws['overdue']}**")
+            else:
+                st.write("Pendências atrasadas hoje: **0**")
+
     if sug.empty:
         st.info("Hoje está limpo. Se quiser, avance em um tópico pendente pela lista de matérias.")
+
+        # Lembrete mínimo (1 por dia, sem coach)
+        if week_min < 30:
+            st.caption("💡 15 minutos hoje já mantém o ritmo.")
+        else:
+            st.caption("💡 Um tópico pendente pode virar concluído agora.")
         return
 
     for _, r in sug.iterrows():
@@ -365,7 +466,6 @@ def _screen_today(df_s, df_t, df_l):
 
         # etiqueta de contexto (atrasado/hoje/semana)
         hoje = date.today()
-        tag = ""
         if planned and planned < hoje:
             tag = "⚠️ Atrasado"
         elif planned and planned == hoje:
@@ -383,28 +483,28 @@ def _screen_today(df_s, df_t, df_l):
             extra.append("🔁 Revisão")
 
         st.markdown(
-            f"<div class='card'><b>{title}</b><br><span style='opacity:.85'>{' • '.join(extra)}</span>"
+            f"<div class='card'><b>{title}</b><br>"
+            f"<span style='opacity:.85'>{' • '.join(extra)}</span>"
             f"<br><span class='status-badge {status}'>{STATUS_LABEL.get(status,status)}</span></div>",
             unsafe_allow_html=True
         )
 
-        b1, b2 = st.columns([2,1])
+        b1, b2 = st.columns([2, 1])
         if b1.button("▶️ Começar", key=f"today_start_{tid}"):
             st.session_state.estudos_topic_id = tid
             st.session_state.estudos_screen = "study"
             st.rerun()
 
-        with b2:
-            if st.button("☑️ Estudado", key=f"today_done_{tid}"):
-                atualizar_estudos_topic(tid, {"status": "done", "review": False})
-                recarregar()
-                st.toast("Concluído.")
-                st.rerun()
+        if b2.button("☑️ Estudado", key=f"today_done_{tid}"):
+            atualizar_estudos_topic(tid, {"status": "done", "review": False})
+            recarregar()
+            st.toast("Concluído.")
+            st.rerun()
 
-        st.markdown("<br>", unsafe_allow_html=True)
+        # ✅ espaçamento leve entre cards (mobile-friendly)
+        st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
     # Lembrete mínimo (1 por dia, sem coach)
-    # Regra simples: se semana < 30 min, sugerir 15 min hoje.
     if week_min < 30:
         st.caption("💡 15 minutos hoje já mantém o ritmo.")
     else:
