@@ -214,16 +214,22 @@ def _pick_today_topics(df_s, df_t, df_logs, limit=3):
             return max(candidates) if candidates else None
         base["last_dt"] = base.apply(_merge_last, axis=1)
 
-    # flags de planejamento
-    base["is_overdue"] = base["planned_date_dt"].notna() & (base["planned_date_dt"] < hoje)
-    base["is_today"] = base["planned_date_dt"].notna() & (base["planned_date_dt"] == hoje)    
-    base["is_weekday"] = (~has_date) & base["planned_weekdays"].apply(
+    
+    # flags de planejamento (regra: planned_date vence weekdays)
+    base["has_date"] = base["planned_date_dt"].notna()
+    
+    base["is_overdue"] = base["has_date"] & (base["planned_date_dt"] < hoje)
+    base["is_today"]   = base["has_date"] & (base["planned_date_dt"] == hoje)
+    
+    # weekdays só valem quando NÃO existe planned_date
+    base["is_weekday"] = (~base["has_date"]) & base["planned_weekdays"].apply(
         lambda lst: isinstance(lst, list) and (wday in lst)
     )
     
-    base["has_plan"] = has_date | base["planned_weekdays"].apply(
+    base["has_plan"] = base["has_date"] | base["planned_weekdays"].apply(
         lambda lst: isinstance(lst, list) and len(lst) > 0
     )
+
 
     # score: menor é melhor
     # 0 atrasado, 1 hoje, 2 dia semana, 3 sem plano (só entra se faltar)
@@ -720,14 +726,16 @@ def _finish_session(topic_id: int, result: str):
     dur = int((end - start).total_seconds() // 60)
     dur = max(0, dur)  # ✅ agora pode ser 0
 
-
+    
     inserir_estudos_log({
         "topic_id": int(topic_id),
         "start_at": start.isoformat() + "Z",
         "end_at": end.isoformat() + "Z",
         "duration_min": dur,
-        "result": result
+        "result": result,
+        "counts_for_streak": bool(dur >= 10)  # ✅ fecha o ciclo
     })
+
 
     # atualiza tópico de forma "honesta"
     patch = {
@@ -743,9 +751,9 @@ def _finish_session(topic_id: int, result: str):
         patch.update({"status": "doing"})
         msg = "Sessão registrada. Você avançou."
     else:
-        # REVIEW: decisão C -> agenda +2 dias (sem culpa)
+        # REVIEW: decisão C -> agenda +2 dias (sem culpa)        
         patch.update({
-            "status": "todo",     # volta para pendente
+            "status": "todo",
             "review": True,
             "planned_date": (hoje + timedelta(days=2)).isoformat()
         })
