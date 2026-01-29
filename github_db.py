@@ -823,3 +823,120 @@ def inserir_estudos_log(reg: Dict[str, Any]) -> None:
 
     safe_update_json(estudos_path("study_logs"), updater, commit_message="add estudos study_log")
 
+# =================================================
+#          SAÚDE (PAINEL): PERFIL / REFEIÇÕES / HÁBITOS / ATIVIDADES
+# =================================================
+
+def saude_profile_path() -> str:
+    return saude_path("profile")
+
+def saude_meals_path() -> str:
+    return saude_path("meals")
+
+def saude_habits_path() -> str:
+    return saude_path("habit_checks")
+
+def saude_activity_path() -> str:
+    return saude_path("activity_logs")
+
+
+# --------- PERFIL ----------
+def buscar_saude_profile() -> Dict[str, Any]:
+    obj, _ = gh_get_file(saude_profile_path())
+    return obj if isinstance(obj, dict) else {}
+
+def upsert_saude_profile(patch: Dict[str, Any]) -> None:
+    def updater(obj):
+        obj = obj or {}
+        out = dict(obj)
+        out.update(patch)
+        return out
+    safe_update_json(saude_profile_path(), updater, commit_message="upsert saude profile")
+
+
+# --------- REFEIÇÕES ----------
+def buscar_meals() -> List[Dict[str, Any]]:
+    obj, _ = gh_get_file(saude_meals_path())
+    return obj if isinstance(obj, list) else []
+
+def inserir_meal(reg: Dict[str, Any]) -> None:
+    def updater(obj):
+        obj = obj or []
+        new_id = (max([int(r.get("id", 0)) for r in obj if isinstance(r, dict)]) + 1) if obj else 1
+        row = {
+            "id": new_id,
+            "date": str(reg.get("date")),
+            "meal": (reg.get("meal") or "").strip(),
+            "quality": (reg.get("quality") or "").strip(),
+            "notes": (reg.get("notes") or "").strip()
+        }
+        obj.append(row)
+        return obj
+    safe_update_json(saude_meals_path(), updater, commit_message="add meal")
+
+def atualizar_meal(meal_id: int, patch: Dict[str, Any]) -> None:
+    def updater(obj):
+        obj = obj or []
+        for r in obj:
+            if isinstance(r, dict) and int(r.get("id", -1)) == int(meal_id):
+                r.update(dict(patch))
+        return obj
+    safe_update_json(saude_meals_path(), updater, commit_message=f"update meal {meal_id}")
+
+def deletar_meal(meal_id: int) -> None:
+    def updater(obj):
+        obj = obj or []
+        return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(meal_id))]
+    safe_update_json(saude_meals_path(), updater, commit_message=f"delete meal {meal_id}")
+
+
+# --------- HÁBITOS (1 registro por dia) ----------
+def buscar_habit_checks() -> List[Dict[str, Any]]:
+    obj, _ = gh_get_file(saude_habits_path())
+    return obj if isinstance(obj, list) else []
+
+def upsert_habit_check(date_str: str, patch: Dict[str, Any]) -> None:
+    def updater(obj):
+        obj = obj or []
+        found = None
+        for r in obj:
+            if isinstance(r, dict) and str(r.get("date")) == date_str:
+                found = r
+                break
+        if found is None:
+            new_id = (max([int(r.get("id", 0)) for r in obj if isinstance(r, dict)]) + 1) if obj else 1
+            found = {"id": new_id, "date": date_str, "water_done": False, "move_done": False, "sleep_done": False}
+            obj.append(found)
+
+        found.update(dict(patch))
+        return obj
+
+    safe_update_json(saude_habits_path(), updater, commit_message=f"upsert habit_check {date_str}")
+
+
+# --------- ATIVIDADES (movimento simples) ----------
+def buscar_activity_logs() -> List[Dict[str, Any]]:
+    obj, _ = gh_get_file(saude_activity_path())
+    return obj if isinstance(obj, list) else []
+
+def inserir_activity_log(reg: Dict[str, Any]) -> None:
+    def updater(obj):
+        obj = obj or []
+        new_id = (max([int(r.get("id", 0)) for r in obj if isinstance(r, dict)]) + 1) if obj else 1
+        row = {
+            "id": new_id,
+            "date": str(reg.get("date")),
+            "activity": (reg.get("activity") or "").strip(),
+            "minutes": int(reg.get("minutes") or 0),
+            "intensity": (reg.get("intensity") or "leve").strip()
+        }
+        obj.append(row)
+        return obj
+    safe_update_json(saude_activity_path(), updater, commit_message="add activity_log")
+
+def deletar_activity_log(log_id: int) -> None:
+    def updater(obj):
+        obj = obj or []
+        return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(log_id))]
+    safe_update_json(saude_activity_path(), updater, commit_message=f"delete activity_log {log_id}")
+
