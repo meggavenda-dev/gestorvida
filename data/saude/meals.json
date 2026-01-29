@@ -12,5 +12,12 @@
     "meal": "almoco",
     "quality": "leve",
     "notes": ""
+  },
+  {
+    "id": 3,
+    "date": "2026-01-29",
+    "meal": "lanche",
+    "quality": "leve",
+    "notes": ""
   }
 ]
