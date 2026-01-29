@@ -77,7 +77,7 @@ def _next_from_recurrence(t: dict):
         if freq == "weekly":
             return s + timedelta(weeks=interval)
         if freq == "monthly":
-            return s + timedelta(days=30*interval)
+            return s + timedelta(days=30*interval)  # simplificação
     else:
         d = _iso_to_date(t.get("due_at"))
         if not d:
@@ -87,7 +87,7 @@ def _next_from_recurrence(t: dict):
         if freq == "weekly":
             return d + timedelta(weeks=interval)
         if freq == "monthly":
-            return d + timedelta(days=30*interval)
+            return d + timedelta(days=30*interval)  # simplificação
     return None
 
 def _inject_notifications():
@@ -177,18 +177,25 @@ def render_tarefas():
 
     tab_hoje, tab_prox, tab_done = st.tabs(["Hoje", "Próximos", "Concluídos"])
 
-    def _render_quick_actions(t):
+    # ==========================
+    # Ações rápidas (com key_ns)
+    # ==========================
+    def _render_quick_actions(t, key_ns: str = ""):
         col = st.columns([1,1,1,1,1])
         # concluir
         with col[0]:
-            chk = st.checkbox("Feita", value=(t.get("status") == "done"), key=f"chk_{t['id']}")
+            chk = st.checkbox(
+                "Feita",
+                value=(t.get("status") == "done"),
+                key=f"chk_{key_ns}{t['id']}"
+            )
             if chk and t.get("status") != "done":
                 patch = {"status": "done", "completed_at": datetime.utcnow().isoformat()+"Z"}
                 nxt = _next_from_recurrence(t)
                 if nxt:
                     if t.get("type") == "event":
                         inserir_task({
-                            **{k:v for k,v in t.items() if k != 'id'},
+                            **{k: v for k, v in t.items() if k != 'id'},
                             "status": "todo",
                             "start_at": nxt.isoformat(),
                             "created_at": datetime.utcnow().isoformat()+"Z",
@@ -202,7 +209,7 @@ def render_tarefas():
                 st.session_state.tasks = buscar_tasks(); st.rerun()
         # +1 dia
         with col[1]:
-            if st.button("+1d", key=f"plus1_{t['id']}"):
+            if st.button("+1d", key=f"plus1_{key_ns}{t['id']}"):
                 if t.get("type") == "event":
                     s = _iso_to_dt(t.get("start_at")) or datetime.now()
                     atualizar_task(int(t["id"]), {"start_at": (s+timedelta(days=1)).isoformat()})
@@ -212,7 +219,7 @@ def render_tarefas():
                 st.session_state.tasks = buscar_tasks(); st.rerun()
         # amanhã
         with col[2]:
-            if st.button("Amanhã", key=f"tmw_{t['id']}"):
+            if st.button("Amanhã", key=f"tmw_{key_ns}{t['id']}"):
                 if t.get("type") == "event":
                     s = _iso_to_dt(t.get("start_at")) or datetime.now()
                     base_dt = datetime.combine(date.today()+timedelta(days=1), s.time())
@@ -224,21 +231,25 @@ def render_tarefas():
         with col[3]:
             imp = t.get("priority", "normal") == "important"
             label = "⭐" if not imp else "⭐ Importante"
-            if st.button(label, key=f"imp_{t['id']}"):
+            if st.button(label, key=f"imp_{key_ns}{t['id']}"):
                 atualizar_task(int(t["id"]), {"priority": ("normal" if imp else "important")})
                 st.session_state.tasks = buscar_tasks(); st.rerun()
         # excluir
         with col[4]:
             st.markdown('<div class="btn-excluir">', unsafe_allow_html=True)
-            if st.button("Excluir", key=f"del_{t['id']}"):
-                confirmar_exclusao(f"dlg_task_{t['id']}", "Confirmar exclusão", lambda: deletar_task(int(t['id'])))
+            if st.button("Excluir", key=f"del_{key_ns}{t['id']}"):
+                confirmar_exclusao(
+                    f"dlg_task_{key_ns}{t['id']}",
+                    "Confirmar exclusão",
+                    lambda: deletar_task(int(t['id']))
+                )
             st.markdown('</div>', unsafe_allow_html=True)
 
     def _render_edit_inline(t):
         nt = st.text_input("Título", value=t.get("title",""), key=f"et_{t['id']}")
         nd = st.text_input("Detalhes", value=t.get("description",""), key=f"ed_{t['id']}")
         st.caption("Reagendamento e ações rápidas")
-        _render_quick_actions(t)
+        _render_quick_actions(t, key_ns="e_")  # <- evita colisão
         if st.button("Salvar", key=f"save_{t['id']}"):
             patch = {"title": nt.strip(), "description": nd.strip(), "updated_at": datetime.utcnow().isoformat()+"Z"}
             atualizar_task(int(t["id"]), patch)
@@ -268,7 +279,7 @@ def render_tarefas():
         </div>
         """, unsafe_allow_html=True)
 
-        _render_quick_actions(t)
+        _render_quick_actions(t, key_ns="v_")  # <- evita colisão
         with st.expander("Editar"):
             _render_edit_inline(t)
 
