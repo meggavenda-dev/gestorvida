@@ -2,493 +2,724 @@
 # -*- coding: utf-8 -*-
 import streamlit as st
 import pandas as pd
-from datetime import datetime, date, timedelta
+from datetime import date, datetime, timedelta
 
 from github_db import (
-    buscar_subjects, inserir_subject, atualizar_subject, deletar_subject,
-    buscar_materials, inserir_material, atualizar_material, deletar_material,
-    buscar_flashcards, inserir_flashcard, atualizar_flashcard, deletar_flashcard,
-    buscar_sessions, inserir_session, atualizar_session, deletar_session
+    buscar_estudos_subjects, inserir_estudos_subject, atualizar_estudos_subject, deletar_estudos_subject,
+    buscar_estudos_topics, inserir_estudos_topic, atualizar_estudos_topic, deletar_estudos_topic,
+    buscar_estudos_logs, inserir_estudos_log
 )
 
 from ui_helpers import confirmar_exclusao
 
-# ----------------------------
-# Utilidades internas
-# ----------------------------
-def recarregar():
-    """Recarrega dados desta aba para a sessão."""
-    st.session_state.subjects = buscar_subjects()
-    st.session_state.materials = buscar_materials()
-    st.session_state.flashcards = buscar_flashcards()
-    st.session_state.sessions = buscar_sessions()
+STATUS_LABEL = {"todo": "Não estudado", "doing": "Estudando", "done": "Estudado"}
+STATUS_ORDER = ["todo", "doing", "done"]
+WEEK_LABELS = ["Seg", "Ter", "Qua", "Qui", "Sex", "Sáb", "Dom"]
 
-def _safe_sort(df: pd.DataFrame, col: str, ascending=True):
-    """Ordena com segurança; se coluna não existir, retorna df como está."""
-    if df is None or df.empty:
-        return df
-    if col not in df.columns:
-        return df
-    return df.sort_values(by=col, ascending=ascending)
+# Ajuste simples para "data local" a partir de UTC (Brasília ~ UTC-3)
+LOCAL_UTC_OFFSET_HOURS = -3
 
-def _ensure_int_or_none(x):
+def _parse_iso_dt(s: str):
     try:
-        if pd.isna(x):
+        if not s:
             return None
-        return int(x)
+        # lida com "Z"
+        if isinstance(s, str) and s.endswith("Z"):
+            s = s[:-1]
+        return datetime.fromisoformat(s)
     except Exception:
         return None
 
-def _ensure_float_or_zero(x):
-    try:
-        if pd.isna(x):
-            return 0.0
-        return float(x)
-    except Exception:
-        return 0.0
+def _to_local_date(dt: datetime):
+    if dt is None:
+        return None
+    return (dt + timedelta(hours=LOCAL_UTC_OFFSET_HOURS)).date()
 
-# ----------------------------
-# Render principal
-# ----------------------------
+def _to_date(x):
+    try:
+        return pd.to_datetime(x, errors="coerce").date()
+    except Exception:
+        return None
+
+def _ensure_list_weekdays(x):
+    if isinstance(x, list):
+        out = []
+        for v in x:
+            try:
+                iv = int(v)
+                if 0 <= iv <= 6:
+                    out.append(iv)
+            except Exception:
+                pass
+        return out
+    return []
+
+def _get_state():
+    if "estudos_screen" not in st.session_state:
+        st.session_state.estudos_screen = "today"  # today | subjects | topics | study
+    if "estudos_subject_id" not in st.session_state:
+        st.session_state.estudos_subject_id = None
+    if "estudos_topic_id" not in st.session_state:
+        st.session_state.estudos_topic_id = None
+    if "study_timer_start" not in st.session_state:
+        st.session_state.study_timer_start = None  # datetime UTC
+    if "study_timer_topic" not in st.session_state:
+        st.session_state.study_timer_topic = None
+
+def recarregar():
+    st.session_state.est_sub = buscar_estudos_subjects()
+    st.session_state.est_topics = buscar_estudos_topics()
+    st.session_state.est_logs = buscar_estudos_logs()
+
+def _df_subjects():
+    df = pd.DataFrame(st.session_state.est_sub)
+    if df.empty:
+        df = pd.DataFrame(columns=["id", "name", "order"])
+    for c in ["id", "name", "order"]:
+        if c not in df.columns:
+            df[c] = None
+    df["id"] = pd.to_numeric(df["id"], errors="coerce").astype("Int64")
+    df["order"] = pd.to_numeric(df["order"], errors="coerce").fillna(9999).astype(int)
+    df["name"] = df["name"].fillna("").astype(str)
+    return df.sort_values(["order", "name"], na_position="last")
+
+def _df_topics():
+    df = pd.DataFrame(st.session_state.est_topics)
+    if df.empty:
+        df = pd.DataFrame(columns=[
+            "id","subject_id","title","order","status","planned_date","planned_weekdays","notes",
+            "review","active","last_studied_at"
+        ])
+    for c in ["id","subject_id","title","order","status","planned_date","planned_weekdays","notes","review","active","last_studied_at"]:
+        if c not in df.columns:
+            df[c] = None
+
+    df["id"] = pd.to_numeric(df["id"], errors="coerce").astype("Int64")
+    df["subject_id"] = pd.to_numeric(df["subject_id"], errors="coerce").astype("Int64")
+    df["order"] = pd.to_numeric(df["order"], errors="coerce").fillna(9999).astype(int)
+    df["title"] = df["title"].fillna("").astype(str)
+    df["status"] = df["status"].fillna("todo").astype(str)
+    df["planned_date_dt"] = df["planned_date"].apply(_to_date)
+    df["planned_weekdays"] = df["planned_weekdays"].apply(_ensure_list_weekdays)
+    df["notes"] = df["notes"].fillna("").astype(str)
+    df["review"] = df["review"].fillna(False).astype(bool)
+    df["active"] = df["active"].fillna(True).astype(bool)
+    return df
+
+def _df_logs():
+    df = pd.DataFrame(st.session_state.est_logs)
+    if df.empty:
+        df = pd.DataFrame(columns=["id","topic_id","start_at","end_at","duration_min","result"])
+    for c in ["id","topic_id","start_at","end_at","duration_min","result"]:
+        if c not in df.columns:
+            df[c] = None
+    df["topic_id"] = pd.to_numeric(df["topic_id"], errors="coerce").astype("Int64")
+    df["duration_min"] = pd.to_numeric(df["duration_min"], errors="coerce").fillna(0).astype(int)
+    df["start_dt"] = df["start_at"].apply(_parse_iso_dt)
+    df["start_date_local"] = df["start_dt"].apply(_to_local_date)
+    return df
+
+def _progress_subject(df_topics_sub):
+    if df_topics_sub.empty:
+        return 0.0, 0, 0
+    total = len(df_topics_sub)
+    done = int((df_topics_sub["status"] == "done").sum())
+    return done / max(1, total), done, total
+
+def _week_minutes(df_logs):
+    # semana (7 dias corridos incluindo hoje)
+    hoje = date.today()
+    ini = hoje - timedelta(days=6)
+    df = df_logs.dropna(subset=["start_date_local"]).copy()
+    dfw = df[(df["start_date_local"] >= ini) & (df["start_date_local"] <= hoje)]
+    return int(dfw["duration_min"].sum())
+
+def _streak_days(df_logs, min_minutes_day=10):
+    """
+    Streak silencioso: conta dias consecutivos (até hoje) onde soma >= min_minutes_day.
+    Se falhar, zera, mas histórico permanece.
+    """
+    df = df_logs.dropna(subset=["start_date_local"]).copy()
+    if df.empty:
+        return 0
+
+    g = df.groupby("start_date_local")["duration_min"].sum()
+    if g.empty:
+        return 0
+
+    hoje = date.today()
+    streak = 0
+    d = hoje
+    while True:
+        if int(g.get(d, 0)) >= min_minutes_day:
+            streak += 1
+            d = d - timedelta(days=1)
+        else:
+            break
+    return streak
+
+def _pick_today_topics(df_s, df_t, df_logs, limit=3):
+    """
+    Sugestão 1–3 tópicos:
+    prioridade: atrasados > hoje > dia da semana > pendentes sem plano
+    desempate: menos estudado recentemente (last_studied_at / logs), depois order
+    """
+    hoje = date.today()
+    wday = hoje.weekday()
+
+    # apenas ativos e não concluídos
+    base = df_t[(df_t["active"] == True) & (df_t["status"] != "done")].copy()
+    if base.empty:
+        return base
+
+    # last studied (preferir os menos recentes)
+    # 1) usa last_studied_at do tópico se tiver
+    base["last_dt"] = base["last_studied_at"].apply(_parse_iso_dt)
+
+    # 2) complementa com logs (última sessão por tópico)
+    if not df_logs.empty:
+        last_by_topic = df_logs.dropna(subset=["topic_id","start_dt"]).groupby("topic_id")["start_dt"].max()
+        def _merge_last(row):
+            try:
+                tid = int(row["id"])
+                from_log = last_by_topic.get(tid, None)
+            except Exception:
+                from_log = None
+            # pega o mais recente entre os dois (para saber "quão recente foi")
+            # mas para priorizar menos estudado, vamos ordenar por "mais antigo"
+            candidates = [x for x in [row["last_dt"], from_log] if x is not None]
+            return max(candidates) if candidates else None
+        base["last_dt"] = base.apply(_merge_last, axis=1)
+
+    # flags de planejamento
+    base["is_overdue"] = base["planned_date_dt"].notna() & (base["planned_date_dt"] < hoje)
+    base["is_today"] = base["planned_date_dt"].notna() & (base["planned_date_dt"] == hoje)
+    base["is_weekday"] = base["planned_weekdays"].apply(lambda lst: isinstance(lst, list) and (wday in lst))
+    base["has_plan"] = base["planned_date_dt"].notna() | base["planned_weekdays"].apply(lambda lst: isinstance(lst, list) and len(lst) > 0)
+
+    # score: menor é melhor
+    # 0 atrasado, 1 hoje, 2 dia semana, 3 sem plano (só entra se faltar)
+    def _bucket(r):
+        if r["is_overdue"]:
+            return 0
+        if r["is_today"]:
+            return 1
+        if r["is_weekday"]:
+            return 2
+        return 3
+
+    base["bucket"] = base.apply(_bucket, axis=1)
+
+    # primeiro seleciona de buckets 0,1,2
+    preferred = base[base["bucket"].isin([0,1,2])].copy()
+    rest = base[base["bucket"] == 3].copy()
+
+    # ordenação: bucket, review primeiro (se marcado), last_dt mais antigo primeiro, order
+    def _sort(df):
+        df["last_sort"] = df["last_dt"].apply(lambda x: x.timestamp() if x else 0)
+        # como queremos "menos recente", last_sort ASC (0 = nunca estudado) fica antes
+        return df.sort_values(
+            by=["bucket", "review", "last_sort", "order", "title"],
+            ascending=[True, False, True, True, True],
+            na_position="first"
+        )
+
+    out = _sort(preferred).head(limit)
+    if len(out) < limit:
+        add = _sort(rest).head(limit - len(out))
+        out = pd.concat([out, add], ignore_index=True)
+
+    # enrich subject name
+    sub_map = {int(r["id"]): (r["name"] or "").strip() for _, r in df_s.iterrows() if pd.notnull(r["id"])}
+    out["subject_name"] = out["subject_id"].apply(lambda sid: sub_map.get(int(sid), ""))
+    return out
+
+def _next_suggested(df_t, subject_id, current_topic_id=None):
+    """Próximo sugerido: próximo não concluído por ordem na mesma matéria."""
+    df = df_t[(df_t["subject_id"] == subject_id) & (df_t["active"] == True) & (df_t["status"] != "done")].copy()
+    if df.empty:
+        return None
+    df = df.sort_values(["order","title"], na_position="last")
+    if current_topic_id is None:
+        return df.iloc[0]
+    # pega o primeiro com order maior ou diferente
+    cur = df_t[df_t["id"] == current_topic_id]
+    cur_order = int(cur.iloc[0]["order"]) if not cur.empty and pd.notnull(cur.iloc[0]["order"]) else None
+    if cur_order is not None:
+        after = df[df["order"] > cur_order]
+        if not after.empty:
+            return after.iloc[0]
+    # fallback: primeiro disponível
+    return df.iloc[0]
+
 def render_estudos():
     st.markdown("""
       <div class="header-container">
         <div class="main-title">📚 Estudos</div>
-        <div class="slogan">Consistência e foco</div>
+        <div class="slogan">Decide menos. Mostra avanço. Registra consistência.</div>
       </div>
     """, unsafe_allow_html=True)
 
-    # Carrega sessão (defensivo)
-    if 'subjects' not in st.session_state: st.session_state.subjects = buscar_subjects()
-    if 'materials' not in st.session_state: st.session_state.materials = buscar_materials()
-    if 'flashcards' not in st.session_state: st.session_state.flashcards = buscar_flashcards()
-    if 'sessions' not in st.session_state: st.session_state.sessions = buscar_sessions()
+    _get_state()
 
-    aba_assuntos, aba_flash, aba_sessoes = st.tabs(["📂 Assuntos & Materiais", "🧠 Flashcards", "⏱️ Sessões"])
+    if "est_sub" not in st.session_state: st.session_state.est_sub = buscar_estudos_subjects()
+    if "est_topics" not in st.session_state: st.session_state.est_topics = buscar_estudos_topics()
+    if "est_logs" not in st.session_state: st.session_state.est_logs = buscar_estudos_logs()
 
-    # =========================================================
-    # Assuntos & Materiais
-    # =========================================================
-    with aba_assuntos:
-        st.markdown("### Assuntos")
-        with st.expander("➕ Novo assunto", expanded=False):
-            with st.form("form_subject", clear_on_submit=True):
-                nome = st.text_input("Nome do assunto")
-                if st.form_submit_button("Salvar"):
-                    if not nome.strip():
-                        st.error("Informe o nome do assunto.")
-                    else:
-                        try:
-                            inserir_subject({"name": nome.strip()})
-                            st.success("Assunto criado!")
-                            recarregar()
-                            st.rerun()
-                        except Exception as e:
-                            st.error("Não foi possível criar o assunto.")
-                            st.exception(e)
+    df_s = _df_subjects()
+    df_t = _df_topics()
+    df_l = _df_logs()
 
-        subs = st.session_state.subjects or []
-        mats = st.session_state.materials or []
+    # Top nav (3 telas, mas "Hoje" é padrão)
+    col1, col2, col3 = st.columns(3)
+    if col1.button("✅ Hoje", key="nav_today"):
+        st.session_state.estudos_screen = "today"
+        st.rerun()
+    if col2.button("📌 Matérias", key="nav_subjects"):
+        st.session_state.estudos_screen = "subjects"
+        st.rerun()
+    if col3.button("📝 Estudo", key="nav_study"):
+        st.session_state.estudos_screen = "study"
+        st.rerun()
 
-        # Garante DataFrames com colunas esperadas
-        df_s = pd.DataFrame(subs)
-        if df_s.empty:
-            df_s = pd.DataFrame(columns=['id', 'name'])
-        if 'name' not in df_s.columns: df_s['name'] = None
-        if 'id' not in df_s.columns: df_s['id'] = None
+    st.divider()
 
-        df_m = pd.DataFrame(mats)
-        if df_m.empty:
-            df_m = pd.DataFrame(columns=['id', 'subject_id', 'title', 'url'])
-        for c in ['id','subject_id','title','url']:
-            if c not in df_m.columns:
-                df_m[c] = None
+    screen = st.session_state.estudos_screen
 
-        # Normaliza tipos de IDs para evitar comparações inconsistentes
-        if 'id' in df_s.columns:
-            df_s['id'] = df_s['id'].apply(_ensure_int_or_none)
-        if 'subject_id' in df_m.columns:
-            df_m['subject_id'] = df_m['subject_id'].apply(_ensure_int_or_none)
-        if 'id' in df_m.columns:
-            df_m['id'] = df_m['id'].apply(_ensure_int_or_none)
+    if screen == "today":
+        _screen_today(df_s, df_t, df_l)
+    elif screen == "subjects":
+        _screen_subjects(df_s, df_t)
+    elif screen == "topics":
+        _screen_topics(df_s, df_t)
+    else:
+        _screen_study(df_s, df_t, df_l)
 
-        if df_s.empty or df_s['id'].isna().all():
-            st.info("Nenhum assunto cadastrado.")
+def _screen_today(df_s, df_t, df_l):
+    st.markdown("### Seu estudo de hoje")
+
+    # Métricas honestas (sem circo)
+    week_min = _week_minutes(df_l)
+    streak = _streak_days(df_l, min_minutes_day=10)
+
+    total_active = int(len(df_t[(df_t["active"] == True)]))
+    done_active = int((df_t[(df_t["active"] == True)]["status"] == "done").sum()) if total_active else 0
+    prog = done_active / max(1, total_active)
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Progresso", f"{done_active}/{total_active}")
+    c2.metric("Semana", f"{week_min} min")
+    c3.metric("Streak", f"{streak} dia(s)")
+
+    st.progress(prog)
+
+    # Sugestões (1–3)
+    sug = _pick_today_topics(df_s, df_t, df_l, limit=3)
+
+    if sug.empty:
+        st.info("Hoje está limpo. Se quiser, avance em um tópico pendente pela lista de matérias.")
+        return
+
+    for _, r in sug.iterrows():
+        tid = int(r["id"])
+        title = (r["title"] or "").strip() or f"Tópico {tid}"
+        subj = (r.get("subject_name") or "").strip()
+        status = r.get("status", "todo")
+        planned = r.get("planned_date_dt")
+        days = r.get("planned_weekdays", [])
+        review = bool(r.get("review", False))
+
+        # etiqueta de contexto (atrasado/hoje/semana)
+        hoje = date.today()
+        tag = ""
+        if planned and planned < hoje:
+            tag = "⚠️ Atrasado"
+        elif planned and planned == hoje:
+            tag = "📅 Hoje"
+        elif isinstance(days, list) and (hoje.weekday() in days):
+            tag = "🗓 Dia da semana"
         else:
-            # Ordena com segurança por nome
-            df_s = _safe_sort(df_s, 'name', ascending=True)
+            tag = "📌 Pendente"
 
-            for _, s in df_s.iterrows():
-                sid = _ensure_int_or_none(s.get('id'))
-                nome_assunto = (s.get('name') or "").strip() or "(sem nome)"
+        extra = []
+        if subj:
+            extra.append(f"Matéria: **{subj}**")
+        extra.append(tag)
+        if review:
+            extra.append("🔁 Revisão")
 
-                st.markdown(f"<div class='card'><b>📁 {nome_assunto}</b></div>", unsafe_allow_html=True)
+        st.markdown(
+            f"<div class='card'><b>{title}</b><br><span style='opacity:.85'>{' • '.join(extra)}</span>"
+            f"<br><span class='status-badge {status}'>{STATUS_LABEL.get(status,status)}</span></div>",
+            unsafe_allow_html=True
+        )
 
-                # Materiais do assunto
-                st.markdown("**Materiais**")
-                if sid is not None:
-                    mlist = df_m[df_m['subject_id'] == sid].copy()
+        b1, b2 = st.columns([2,1])
+        if b1.button("▶️ Começar", key=f"today_start_{tid}"):
+            st.session_state.estudos_topic_id = tid
+            st.session_state.estudos_screen = "study"
+            st.rerun()
+
+        with b2:
+            if st.button("☑️ Estudado", key=f"today_done_{tid}"):
+                atualizar_estudos_topic(tid, {"status": "done", "review": False})
+                recarregar()
+                st.toast("Concluído.")
+                st.rerun()
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+    # Lembrete mínimo (1 por dia, sem coach)
+    # Regra simples: se semana < 30 min, sugerir 15 min hoje.
+    if week_min < 30:
+        st.caption("💡 15 minutos hoje já mantém o ritmo.")
+    else:
+        st.caption("💡 Um tópico pendente pode virar concluído agora.")
+
+def _screen_subjects(df_s, df_t):
+    st.markdown("### Matérias")
+
+    with st.expander("➕ Nova matéria", expanded=False):
+        with st.form("form_new_subject_simple", clear_on_submit=True):
+            name = st.text_input("Nome da matéria", placeholder="Ex.: Matemática")
+            if st.form_submit_button("Salvar"):
+                if not name.strip():
+                    st.error("Informe o nome.")
                 else:
-                    mlist = pd.DataFrame(columns=['id','title','url','subject_id'])
+                    inserir_estudos_subject({"name": name.strip(), "order": int(len(df_s) + 1)})
+                    recarregar()
+                    st.toast("Matéria criada!")
+                    st.rerun()
 
-                if mlist.empty:
-                    st.caption("Nenhum material.")
+    if df_s.empty:
+        st.info("Crie sua primeira matéria.")
+        return
+
+    for _, s in df_s.iterrows():
+        sid = int(s["id"])
+        name = (s["name"] or "").strip() or f"Matéria {sid}"
+
+        df_sub = df_t[(df_t["subject_id"] == sid) & (df_t["active"] == True)].copy()
+        prog, done, total = _progress_subject(df_sub)
+        pct = int(round(prog * 100))
+
+        st.markdown(
+            f"<div class='card'><b>📌 {name}</b><br>"
+            f"Progresso: <b>{pct}%</b> • <b>{done}/{total}</b> tópicos</div>",
+            unsafe_allow_html=True
+        )
+        st.progress(prog)
+
+        c1, c2, c3 = st.columns([1.2, 1.2, 1])
+        if c1.button("Abrir", key=f"sub_open_{sid}"):
+            st.session_state.estudos_subject_id = sid
+            st.session_state.estudos_screen = "topics"
+            st.rerun()
+
+        with c2:
+            with st.expander("Editar"):
+                nn = st.text_input("Nome", value=name, key=f"sub_name_{sid}")
+                if st.button("Salvar", key=f"sub_save_{sid}"):
+                    atualizar_estudos_subject(sid, {"name": nn.strip()})
+                    recarregar()
+                    st.toast("Atualizado.")
+                    st.rerun()
+
+        with c3:
+            st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
+            if st.button("Excluir", key=f"sub_del_{sid}"):
+                confirmar_exclusao(f"dlg_sub_{sid}", "Confirmar exclusão", lambda sid_=sid: deletar_estudos_subject(sid_))
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+def _move_topic(df_all_topics, topic_id, direction):
+    row = df_all_topics[df_all_topics["id"] == topic_id]
+    if row.empty:
+        return
+    sid = int(row.iloc[0]["subject_id"])
+    order = int(row.iloc[0]["order"])
+
+    df_sub = df_all_topics[(df_all_topics["subject_id"] == sid) & (df_all_topics["active"] == True)].copy()
+    df_sub = df_sub.sort_values(["order", "title"], na_position="last")
+    ids = df_sub["id"].tolist()
+
+    try:
+        idx = ids.index(topic_id)
+    except ValueError:
+        return
+
+    new_idx = idx + direction
+    if new_idx < 0 or new_idx >= len(ids):
+        return
+
+    other_id = int(ids[new_idx])
+    other_order = int(df_sub[df_sub["id"] == other_id].iloc[0]["order"])
+
+    atualizar_estudos_topic(int(topic_id), {"order": other_order})
+    atualizar_estudos_topic(int(other_id), {"order": order})
+
+def _screen_topics(df_s, df_t):
+    sid = st.session_state.estudos_subject_id
+    if sid is None:
+        st.session_state.estudos_screen = "subjects"
+        st.rerun()
+
+    sub = df_s[df_s["id"] == sid]
+    sub_name = (sub.iloc[0]["name"] if not sub.empty else "") or "Matéria"
+
+    # Voltar
+    if st.button("← Voltar", key="topics_back"):
+        st.session_state.estudos_screen = "subjects"
+        st.session_state.estudos_subject_id = None
+        st.rerun()
+
+    st.markdown(f"### 📌 {sub_name}")
+
+    df_view = df_t[(df_t["subject_id"] == sid) & (df_t["active"] == True)].copy()
+    df_view = df_view.sort_values(["order", "title"], na_position="last")
+
+    with st.expander("➕ Novo tópico", expanded=False):
+        with st.form(f"form_new_topic_{sid}", clear_on_submit=True):
+            title = st.text_input("Tópico/Aula", placeholder="Ex.: Função quadrática")
+            planned = st.date_input("Planejar para (opcional)", value=None)
+            days = st.multiselect("Dias da semana (opcional)", options=list(range(7)), format_func=lambda i: WEEK_LABELS[i])
+            if st.form_submit_button("Adicionar"):
+                if not title.strip():
+                    st.error("Informe o tópico.")
                 else:
-                    for _, mt in mlist.iterrows():
-                        mid = _ensure_int_or_none(mt.get('id'))
-                        mtitle = (mt.get('title') or "").strip() or "(sem título)"
-                        murl = (mt.get('url') or "").strip()
-                        st.write(f"🔗 **{mtitle}** — {murl}")
-                        c1, c3 = st.columns([2,1])
+                    next_order = int(df_view["order"].max() + 1) if not df_view.empty else 1
+                    inserir_estudos_topic({
+                        "subject_id": int(sid),
+                        "title": title.strip(),
+                        "order": next_order,
+                        "status": "todo",
+                        "planned_date": planned.isoformat() if planned else None,
+                        "planned_weekdays": days,
+                        "notes": "",
+                        "review": False
+                    })
+                    recarregar()
+                    st.toast("Tópico criado!")
+                    st.rerun()
 
-                        with c1:
-                            if mid is not None:
-                                with st.expander("Editar material"):
-                                    nt = st.text_input("Título", value=mtitle, key=f"mt_t_{mid}")
-                                    nu = st.text_input("URL", value=murl, key=f"mt_u_{mid}")
-                                    if st.button("Salvar", key=f"mt_sv_{mid}"):
-                                        try:
-                                            atualizar_material(mid, {"title": nt.strip(), "url": nu.strip()})
-                                            st.toast("Material atualizado!")
-                                            recarregar(); st.rerun()
-                                        except Exception as e:
-                                            st.error("Falha ao atualizar material.")
-                                            st.exception(e)
+    if df_view.empty:
+        st.info("Sem tópicos. Crie o primeiro.")
+        return
 
-                        with c3:
-                            if mid is not None:
-                                st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
-                                if st.button("Excluir", key=f"mt_del_{mid}"):
-                                    confirmar_exclusao(
-                                        f"dlg_mt_{mid}", "Confirmar exclusão",
-                                        lambda mid_=mid: deletar_material(mid_)
-                                    )
-                                st.markdown('</div>', unsafe_allow_html=True)
+    # Checklist + ações
+    for _, t in df_view.iterrows():
+        tid = int(t["id"])
+        title = (t["title"] or "").strip() or f"Tópico {tid}"
+        status = t["status"] if t["status"] in STATUS_LABEL else "todo"
+        planned = t["planned_date_dt"]
+        days = t["planned_weekdays"] if isinstance(t["planned_weekdays"], list) else []
+        review = bool(t.get("review", False))
 
-                # Adicionar material ao assunto
-                if sid is not None:
-                    with st.expander("➕ Adicionar material", expanded=False):
-                        with st.form(f"form_mat_{sid}", clear_on_submit=True):
-                            t = st.text_input("Título")
-                            u = st.text_input("URL")
-                            if st.form_submit_button("Adicionar"):
-                                if not t.strip():
-                                    st.error("Informe o título do material.")
-                                else:
-                                    try:
-                                        inserir_material({"subject_id": sid, "title": t.strip(), "url": u.strip()})
-                                        st.success("Material adicionado!")
-                                        recarregar(); st.rerun()
-                                    except Exception as e:
-                                        st.error("Falha ao adicionar material.")
-                                        st.exception(e)
+        plan_txt = ""
+        if planned:
+            plan_txt += f"📅 {planned.strftime('%d/%m')}"
+        if days:
+            dtxt = ",".join([WEEK_LABELS[i] for i in days])
+            plan_txt += (" • " if plan_txt else "") + f"🗓 {dtxt}"
+        if review:
+            plan_txt += (" • " if plan_txt else "") + "🔁 Revisão"
 
-                # Editar/Excluir assunto
-                col_a1, col_a2 = st.columns([2,1])
-                with col_a1:
-                    if sid is not None:
-                        with st.expander("Editar assunto"):
-                            nn = st.text_input("Nome", value=nome_assunto, key=f"sb_n_{sid}")
-                            if st.button("Salvar assunto", key=f"sb_sv_{sid}"):
-                                try:
-                                    atualizar_subject(sid, {"name": nn.strip()})
-                                    st.toast("Assunto atualizado!")
-                                    recarregar(); st.rerun()
-                                except Exception as e:
-                                    st.error("Falha ao atualizar assunto.")
-                                    st.exception(e)
+        st.markdown(
+            f"<div class='card'><b>{title}</b><br>"
+            f"<span style='opacity:.85'>{plan_txt}</span><br>"
+            f"<span class='status-badge {status}'>{STATUS_LABEL.get(status,status)}</span></div>",
+            unsafe_allow_html=True
+        )
 
-                with col_a2:
-                    if sid is not None:
-                        st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
-                        if st.button("Excluir assunto", key=f"sb_del_{sid}"):
-                            confirmar_exclusao(
-                                f"dlg_sb_{sid}", "Confirmar exclusão",
-                                lambda sid_=sid: deletar_subject(sid_)
-                            )
-                        st.markdown('</div>', unsafe_allow_html=True)
+        a1, a2, a3 = st.columns([1.2, 1.2, 1])
+        if a1.button("▶️ Estudar", key=f"topic_study_{tid}"):
+            st.session_state.estudos_topic_id = tid
+            st.session_state.estudos_screen = "study"
+            st.rerun()
 
-    # =========================================================
-    # Flashcards
-    # =========================================================
-    with aba_flash:
-        st.markdown("### Flashcards")
-        subs = st.session_state.subjects or []
-        cards = st.session_state.flashcards or []
+        if a2.button("☑️ Estudado", key=f"topic_done_{tid}"):
+            atualizar_estudos_topic(tid, {"status": "done", "review": False})
+            recarregar()
+            st.toast("Concluído.")
+            st.rerun()
 
-        df_s = pd.DataFrame(subs)
-        if df_s.empty:
-            df_s = pd.DataFrame(columns=['id', 'name'])
-        if 'id' not in df_s.columns: df_s['id'] = None
-        if 'name' not in df_s.columns: df_s['name'] = None
-        # Normaliza id
-        df_s['id'] = df_s['id'].apply(_ensure_int_or_none)
-        df_s = _safe_sort(df_s, 'name', ascending=True)
+        with a3:
+            st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
+            if st.button("Excluir", key=f"topic_del_{tid}"):
+                confirmar_exclusao(f"dlg_topic_{tid}", "Confirmar exclusão", lambda tid_=tid: deletar_estudos_topic(tid_))
+            st.markdown("</div>", unsafe_allow_html=True)
 
-        df_c = pd.DataFrame(cards)
-        if df_c.empty:
-            df_c = pd.DataFrame(columns=['id', 'subject_id', 'front', 'back', 'easiness', 'interval_days', 'due_date'])
-        for c in ['id','subject_id','front','back','easiness','interval_days','due_date']:
-            if c not in df_c.columns:
-                df_c[c] = None
-        # Normaliza ids numéricos
-        df_c['id'] = df_c['id'].apply(_ensure_int_or_none)
-        df_c['subject_id'] = df_c['subject_id'].apply(_ensure_int_or_none)
+        with st.expander("Editar / Planejar / Reordenar"):
+            new_title = st.text_input("Título", value=title, key=f"t_title_{tid}")
+            st_sel = st.selectbox(
+                "Status",
+                options=STATUS_ORDER,
+                index=STATUS_ORDER.index(status),
+                format_func=lambda x: STATUS_LABEL[x],
+                key=f"t_status_{tid}"
+            )
+            new_date = st.date_input("Data planejada", value=planned, key=f"t_date_{tid}")
+            new_days = st.multiselect(
+                "Dias da semana",
+                options=list(range(7)),
+                default=days,
+                format_func=lambda i: WEEK_LABELS[i],
+                key=f"t_days_{tid}"
+            )
+            new_review = st.checkbox("Marcar como revisão", value=review, key=f"t_rev_{tid}")
 
-        # Opções de assunto para filtros
-        sid_options = [("Todos", None)]
-        if not df_s.empty:
-            for _, s in df_s.iterrows():
-                sid = _ensure_int_or_none(s.get('id'))
-                sname = (s.get('name') or "").strip() or (f"Assunto {sid}" if sid else "(sem nome)")
-                if sid is not None:
-                    sid_options.append((sname, sid))
-        nomes_to_id = {n:i for n,i in sid_options}
+            r1, r2, r3 = st.columns(3)
+            if r1.button("⬆️ Subir", key=f"t_up_{tid}"):
+                _move_topic(df_t, tid, direction=-1)
+                recarregar()
+                st.rerun()
+            if r2.button("⬇️ Descer", key=f"t_down_{tid}"):
+                _move_topic(df_t, tid, direction=+1)
+                recarregar()
+                st.rerun()
+            if r3.button("Salvar", key=f"t_save_{tid}"):
+                atualizar_estudos_topic(tid, {
+                    "title": new_title.strip(),
+                    "status": st_sel,
+                    "planned_date": new_date.isoformat() if new_date else None,
+                    "planned_weekdays": new_days,
+                    "review": bool(new_review)
+                })
+                recarregar()
+                st.toast("Atualizado.")
+                st.rerun()
 
-        col_f1, col_f2, col_f3 = st.columns([2,1,1])
-        sid_name = col_f1.selectbox("Assunto (filtro)", options=[n for n,_ in sid_options], index=0)
-        filtro = col_f2.selectbox("Mostrar", options=["A vencer hoje", "Todos"], index=0)
-        ordem = col_f3.selectbox("Ordem", options=["Mais urgentes", "Mais novos"], index=0)
-        sel_sid = nomes_to_id[sid_name]
+        st.markdown("<br>", unsafe_allow_html=True)
 
-        
-        # Formulário de novo flashcard - sempre visível se houver assunto
-        st.markdown("#### ➕ Novo flashcard")
+def _screen_study(df_s, df_t, df_l):
+    tid = st.session_state.estudos_topic_id
+    if not tid:
+        st.info("Selecione um tópico em 'Hoje' ou em 'Matérias'.")
+        return
 
-        # Monte a lista de assuntos válidos (todos com id)
-        assuntos_validos = [n for n, _id in sid_options if _id is not None]
+    row = df_t[df_t["id"] == tid]
+    if row.empty:
+        st.warning("Tópico não encontrado.")
+        return
 
-        if assuntos_validos:
-            # Abra o formulário somente se houver assunto
-            # (evita "Missing Submit Button" quando não há submit)
-            with st.form("form_card", clear_on_submit=True):
-                # Seleciona por padrão o assunto do filtro, se for específico
-                default_idx = 0
-                if sel_sid is not None:
-                    for i, nome in enumerate(assuntos_validos):
-                        if nomes_to_id.get(nome) == sel_sid:
-                            default_idx = i
-                            break
+    t = row.iloc[0]
+    title = (t["title"] or "").strip()
+    status = t["status"] if t["status"] in STATUS_LABEL else "todo"
+    notes = t["notes"] or ""
+    sid = int(t["subject_id"]) if pd.notnull(t["subject_id"]) else None
+    subj_name = ""
+    if sid is not None:
+        sub = df_s[df_s["id"] == sid]
+        subj_name = (sub.iloc[0]["name"] if not sub.empty else "") or ""
 
-                sb = st.selectbox("Assunto", options=assuntos_validos, index=default_idx, key="new_card_subj")
-                subj_id = nomes_to_id[sb]
+    # Top bar
+    cback, copen = st.columns([1,2])
+    if cback.button("← Voltar", key="study_back"):
+        # volta para tópicos se tiver matéria, senão para hoje
+        st.session_state.study_timer_start = None
+        st.session_state.study_timer_topic = None
+        st.session_state.estudos_screen = "topics" if sid is not None else "today"
+        st.session_state.estudos_subject_id = sid
+        st.rerun()
 
-                front = st.text_area("Frente", height=80)
-                back = st.text_area("Verso", height=80)
+    st.markdown(f"### 📝 {title}")
+    if subj_name:
+        st.caption(f"Matéria: **{subj_name}** • Status: **{STATUS_LABEL.get(status,status)}**")
+    else:
+        st.caption(f"Status: **{STATUS_LABEL.get(status,status)}**")
 
-                # ✅ O submit SEMPRE está dentro do form
-                if st.form_submit_button("Salvar"):
-                    if not front.strip() or not back.strip():
-                        st.error("Preencha frente e verso.")
-                    else:
-                        try:
-                            inserir_flashcard({
-                                "subject_id": subj_id,
-                                "front": front.strip(),
-                                "back": back.strip(),
-                            })
-                            st.success("Flashcard criado!")
-                            recarregar(); st.rerun()
-                        except Exception as e:
-                            st.error("Falha ao criar flashcard.")
-                            st.exception(e)
-        else:
-            # ⚠️ Não há assunto -> não abrir form; mostrar aviso fora de form
-            st.warning("Cadastre um assunto primeiro em **Assuntos & Materiais** para criar flashcards.")
+    # Notas
+    new_notes = st.text_area("Anotações rápidas", value=notes, height=200, key=f"notes_{tid}")
+    if st.button("Salvar anotações", key=f"save_notes_{tid}"):
+        atualizar_estudos_topic(int(tid), {"notes": new_notes})
+        recarregar()
+        st.toast("Notas salvas.")
+        st.rerun()
 
+    st.divider()
 
-        st.divider()
+    # Cronômetro discreto
+    timer_running = (st.session_state.study_timer_start is not None) and (st.session_state.study_timer_topic == tid)
 
-        # Listagem / Estudo
-        if df_c.empty:
-            st.info("Nenhum flashcard cadastrado.")
-        else:
-            # Normaliza due_date
-            df_c['due_date'] = pd.to_datetime(df_c['due_date'], errors='coerce').dt.date
-            hoje = date.today()
+    col1, col2 = st.columns([1.3, 1.7])
+    if not timer_running:
+        if col1.button("▶️ Começar estudo", key=f"start_{tid}"):
+            st.session_state.study_timer_start = datetime.utcnow()
+            st.session_state.study_timer_topic = tid
+            atualizar_estudos_topic(int(tid), {"status": "doing"})
+            st.rerun()
+    else:
+        start = st.session_state.study_timer_start
+        mins = int((datetime.utcnow() - start).total_seconds() // 60)
+        col1.metric("Tempo", f"{mins} min")
 
-            # Filtra por assunto
-            if sel_sid is not None:
-                df_c = df_c[df_c['subject_id'] == sel_sid]
+    # Finalizar guiado (tudo/parcial/revisar)
+    if timer_running and col2.button("⏹ Finalizar", key=f"finish_{tid}"):
+        st.session_state.show_finish_dialog = True
 
-            # Filtra por vencimento
-            if filtro == "A vencer hoje":
-                df_c = df_c[df_c['due_date'].isna() | (df_c['due_date'] <= hoje)]
+    if timer_running and st.session_state.get("show_finish_dialog"):
+        st.markdown("#### Como foi?")
+        a, b, c = st.columns(3)
+        if a.button("✅ Estudei tudo", key=f"res_all_{tid}"):
+            _finish_session(tid, result="all")
+        if b.button("🟡 Estudei parte", key=f"res_part_{tid}"):
+            _finish_session(tid, result="partial")
+        if c.button("🔁 Preciso revisar", key=f"res_rev_{tid}"):
+            _finish_session(tid, result="review")
 
-            # Ordena
-            if ordem == "Mais urgentes":
-                df_c = df_c.sort_values(by=['due_date'], na_position='first')
-            else:
-                df_c = df_c.sort_values(by=['id'], ascending=False, na_position='last')
+    # Próximo sugerido (micro-recompensa funcional)
+    if sid is not None:
+        nxt = _next_suggested(df_t, sid, current_topic_id=tid)
+        if nxt is not None and int(nxt["id"]) != int(tid):
+            st.caption(f"➡️ Próximo sugerido: **{(nxt['title'] or '').strip()}**")
 
-            st.caption(f"Cartões nesta visão: **{len(df_c)}**")
+def _finish_session(topic_id: int, result: str):
+    # encerra e grava log
+    start = st.session_state.study_timer_start
+    if start is None:
+        return
+    end = datetime.utcnow()
+    dur = int((end - start).total_seconds() // 60)
+    dur = max(1, dur)
 
-            # SM-2 simplificado (3 botões)
-            def sm2_update(card, quality: int):
-                e = float(card.get('easiness', 2.5) or 2.5)
-                interval = int(card.get('interval_days', 1) or 1)
-                e = e + (0.1 - (5 - quality) * (0.08 + (5 - quality) * 0.02))
-                if e < 1.3: e = 1.3
-                if quality < 3:
-                    interval = 1
-                else:
-                    if interval == 1:
-                        interval = 2
-                    else:
-                        interval = int(round(interval * e))
-                due = date.today() + timedelta(days=interval)
-                return e, interval, due
+    inserir_estudos_log({
+        "topic_id": int(topic_id),
+        "start_at": start.isoformat() + "Z",
+        "end_at": end.isoformat() + "Z",
+        "duration_min": dur,
+        "result": result
+    })
 
-            def _apply_review(cid, card, q):
-                e,i,d = sm2_update(card, q)
-                atualizar_flashcard(cid, {"easiness": e, "interval_days": i, "due_date": d.isoformat()})
-                st.toast(f"Revisado — próximo em {i}d")
-                recarregar(); st.rerun()
+    # atualiza tópico de forma "honesta"
+    patch = {
+        "last_studied_at": end.isoformat() + "Z"
+    }
 
-            # Cartões
-            for _, c in df_c.iterrows():
-                cid = _ensure_int_or_none(c.get('id'))
-                if cid is None:
-                    continue
+    hoje = date.today()
 
-                st.markdown(f"<div class='card'><b>Frente:</b> {c.get('front','')}</div>", unsafe_allow_html=True)
-                with st.expander("Mostrar resposta"):
-                    st.write(c.get('back',''))
+    if result == "all":
+        patch.update({"status": "done", "review": False})
+        msg = "Sessão registrada. Concluído."
+    elif result == "partial":
+        patch.update({"status": "doing"})
+        msg = "Sessão registrada. Você avançou."
+    else:
+        # REVIEW: decisão C -> agenda +2 dias (sem culpa)
+        patch.update({
+            "status": "todo",     # volta para pendente
+            "review": True,
+            "planned_date": (hoje + timedelta(days=2)).isoformat()
+        })
+        msg = "Sessão registrada. Revisão agendada para +2 dias."
 
-                col_r1, col_r2, col_r3 = st.columns(3)
-                if col_r1.button("🔁 Novamente", key=f"qA_{cid}"):
-                    _apply_review(cid, c, 1)  # 0–2
-                if col_r2.button("👍 Bom", key=f"qG_{cid}"):
-                    _apply_review(cid, c, 4)  # 3–4
-                if col_r3.button("✨ Fácil", key=f"qE_{cid}"):
-                    _apply_review(cid, c, 5)  # 5
+    atualizar_estudos_topic(int(topic_id), patch)
 
-                c1, c2 = st.columns([3,1])
-                with c1:
-                    with st.expander("Editar cartão"):
-                        nf = st.text_area("Frente", value=c.get('front',''), key=f"cf_{cid}")
-                        nb = st.text_area("Verso", value=c.get('back',''), key=f"cb_{cid}")
-                        if st.button("Salvar", key=f"c_save_{cid}"):
-                            try:
-                                atualizar_flashcard(cid, {"front": nf.strip(), "back": nb.strip()})
-                                st.toast("Atualizado!")
-                                recarregar(); st.rerun()
-                            except Exception as e:
-                                st.error("Falha ao atualizar cartão.")
-                                st.exception(e)
-                with c2:
-                    st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
-                    if st.button("Excluir", key=f"c_del_{cid}"):
-                        confirmar_exclusao(
-                            f"dlg_card_{cid}", "Confirmar exclusão",
-                            lambda cid_=cid: deletar_flashcard(cid_)
-                        )
-                    st.markdown('</div>', unsafe_allow_html=True)
+    # limpa timer e recarrega
+    st.session_state.study_timer_start = None
+    st.session_state.study_timer_topic = None
+    st.session_state.show_finish_dialog = False
 
-    # =========================================================
-    # Sessões
-    # =========================================================
-    with aba_sessoes:
-        st.markdown("### Sessões de estudo")
-        subs = st.session_state.subjects or []
-        sessions = st.session_state.sessions or []
-
-        df_s = pd.DataFrame(subs)
-        if df_s.empty:
-            df_s = pd.DataFrame(columns=['id','name'])
-        if 'id' not in df_s.columns: df_s['id'] = None
-        if 'name' not in df_s.columns: df_s['name'] = None
-        df_s['id'] = df_s['id'].apply(_ensure_int_or_none)
-        df_s = _safe_sort(df_s, 'name', ascending=True)
-
-        sid_options = []
-        for _, s in df_s.iterrows():
-            sid = _ensure_int_or_none(s.get('id'))
-            if sid is not None:
-                sid_options.append(( (s.get('name') or "").strip() or f"Assunto {sid}", sid))
-        nomes_to_id = {n:i for n,i in sid_options} if sid_options else {}
-
-        with st.expander("➕ Nova sessão", expanded=False):
-            with st.form("form_session", clear_on_submit=True):
-                if sid_options:
-                    sb = st.selectbox("Assunto", options=[n for n,_ in sid_options], index=0, key="new_session_subj")
-                    subj_id = nomes_to_id[sb]
-                else:
-                    st.warning("Cadastre um assunto primeiro.")
-                    subj_id = None
-                dur = st.number_input("Duração (minutos)", min_value=1, value=30, step=1)
-                notes = st.text_area("Notas (opcional)", height=80)
-                if st.form_submit_button("Salvar"):
-                    if subj_id is None:
-                        st.error("Selecione um assunto.")
-                    else:
-                        try:
-                            inserir_session({
-                                "subject_id": subj_id,
-                                "started_at": datetime.utcnow().isoformat(),
-                                "duration_min": int(dur),
-                                "notes": notes.strip()
-                            })
-                            st.success("Sessão registrada!")
-                            recarregar(); st.rerun()
-                        except Exception as e:
-                            st.error("Falha ao registrar sessão.")
-                            st.exception(e)
-
-        df_se = pd.DataFrame(sessions)
-        if df_se.empty:
-            st.info("Nenhuma sessão registrada.")
-        else:
-            # Garante colunas
-            if 'started_at' not in df_se.columns: df_se['started_at'] = None
-            if 'subject_id' not in df_se.columns: df_se['subject_id'] = None
-            if 'duration_min' not in df_se.columns: df_se['duration_min'] = 0
-            if 'notes' not in df_se.columns: df_se['notes'] = ""
-
-            df_se['subject_id'] = df_se['subject_id'].apply(_ensure_int_or_none)
-            df_se['duration_min'] = df_se['duration_min'].apply(lambda v: int(_ensure_float_or_zero(v)))
-            df_se['started_at_dt'] = pd.to_datetime(df_se['started_at'], errors='coerce')
-
-            # Mapa id -> nome
-            nomes = {}
-            for _, s in df_s.iterrows():
-                sid = _ensure_int_or_none(s.get('id'))
-                if sid is not None:
-                    nomes[sid] = (s.get('name') or "").strip() or f"Assunto {sid}"
-
-            st.caption(f"Total de sessões: {len(df_se)}")
-
-            for _, se in df_se.sort_values(by='started_at_dt', ascending=False, na_position='last').head(30).iterrows():
-                sid = _ensure_int_or_none(se.get('subject_id'))
-                nome = nomes.get(sid, f"Assunto {sid}") if sid is not None else "(sem assunto)"
-                dt_txt = se['started_at_dt'].strftime('%d/%m/%Y %H:%M') if pd.notnull(se['started_at_dt']) else (se.get('started_at','') or '')
-                duracao = int(se.get('duration_min',0) or 0)
-                notas = se.get('notes','') or ''
-
-                st.markdown(f"<div class='card'>📌 <b>{nome}</b> • {dt_txt} • {duracao} min<br>{notas}</div>", unsafe_allow_html=True)
-
-                sess_id = _ensure_int_or_none(se.get('id'))
-                if sess_id is None:
-                    continue
-
-                c1, c3 = st.columns([2,1])
-                with c1:
-                    with st.expander("Editar sessão"):
-                        ndur = st.number_input("Duração (min)", min_value=1, value=duracao if duracao > 0 else 1, step=1, key=f"se_dur_{sess_id}")
-                        nnotes = st.text_area("Notas", value=notas, key=f"se_nt_{sess_id}")
-                        if st.button("Salvar", key=f"se_sv_{sess_id}"):
-                            try:
-                                atualizar_session(int(sess_id), {"duration_min": int(ndur), "notes": nnotes.strip()})
-                                st.toast("Sessão atualizada!")
-                                recarregar(); st.rerun()
-                            except Exception as e:
-                                st.error("Falha ao atualizar sessão.")
-                                st.exception(e)
-                with c3:
-                    st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
-                    if st.button("Excluir", key=f"se_del_{sess_id}"):
-                        confirmar_exclusao(
-                            f"dlg_se_{sess_id}", "Confirmar exclusão",
-                            lambda sid_=sess_id: deletar_session(int(sid_))
-                        )
-                    st.markdown('</div>', unsafe_allow_html=True)
+    recarregar()
+    st.toast(msg)
+    st.rerun()
