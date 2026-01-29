@@ -5,5 +5,12 @@
     "meal": "cafe",
     "quality": "equilibrada",
     "notes": ""
+  },
+  {
+    "id": 2,
+    "date": "2026-01-29",
+    "meal": "almoco",
+    "quality": "leve",
+    "notes": ""
   }
 ]
