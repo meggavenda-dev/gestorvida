@@ -5,12 +5,11 @@ import pandas as pd
 from datetime import date, timedelta, datetime
 
 from github_db import (
-    # Config antiga (meta água override)
+    # Config (meta água override)
     buscar_saude_config, upsert_saude_config,
 
-    # Dados já existentes
-    buscar_peso_logs, inserir_peso, atualizar_peso, deletar_peso,
-    buscar_agua_logs, inserir_agua, atualizar_agua, deletar_agua,
+    # Dados existentes
+    buscar_peso_logs, inserir_peso, buscar_agua_logs, inserir_agua,
     buscar_workout_logs,
 
     # NOVO: painel
@@ -22,11 +21,11 @@ from github_db import (
 
 from ui_helpers import confirmar_exclusao
 
+
 MEAL_LABEL = {"cafe": "Café", "almoco": "Almoço", "jantar": "Jantar", "lanche": "Lanche"}
 MEAL_ORDER = ["cafe", "almoco", "jantar", "lanche"]
 
 QUALITY_LABEL = {"leve": "Leve", "equilibrada": "Equilibrada", "pesada": "Pesada"}
-QUALITY_ORDER = ["leve", "equilibrada", "pesada"]
 
 
 # ----------------------------
@@ -55,8 +54,7 @@ def _clamp(n, a, b):
 
 def _round_to(n, step=50):
     try:
-        n = int(round(float(n) / step) * step)
-        return n
+        return int(round(float(n) / step) * step)
     except Exception:
         return int(n) if n is not None else 0
 
@@ -69,9 +67,14 @@ def _now_hour():
     return datetime.now().hour
 
 def _quiet_hours():
-    # Silencioso à noite: 22:00–07:00
+    # silencioso à noite: 22:00–07:00
     h = _now_hour()
     return (h >= 22) or (h < 7)
+
+def _reset_ui_flags():
+    # evita expanders "grudarem" abertos em rerun/navegação
+    for k in ("show_goal", "show_quick", "show_peso_quick"):
+        st.session_state[k] = False
 
 
 # ----------------------------
@@ -110,10 +113,12 @@ def _last_weight_and_delta_7d(peso_logs, ref: date):
 
     return last_w, None
 
-def _auto_water_goal_ml(cfg: dict, last_weight_kg: float | None):
+def _auto_water_goal_ml(cfg: dict, last_weight_kg):
     """
     Meta automática: peso*35ml (com limites), mas permite override via config.
-    Mantém compatibilidade com water_goal_ml (legado).
+    Compatível com:
+      - cfg["water_goal_ml"] (legado)
+      - cfg["water"]["goal_ml"] (futuro)
     """
     if isinstance(cfg, dict):
         # legado
@@ -122,14 +127,16 @@ def _auto_water_goal_ml(cfg: dict, last_weight_kg: float | None):
                 return int(cfg.get("water_goal_ml"))
             except Exception:
                 pass
-        # pronto para formato futuro (não obrigatório agora)
-        w = cfg.get("water", {}) if isinstance(cfg.get("water", {}), dict) else {}
-        if w.get("goal_ml") not in (None, ""):
+
+        # formato futuro (não obrigatório agora)
+        w = cfg.get("water", {})
+        if isinstance(w, dict) and w.get("goal_ml") not in (None, ""):
             try:
                 return int(w.get("goal_ml"))
             except Exception:
                 pass
 
+    # automático
     if last_weight_kg is not None and last_weight_kg > 0:
         goal = last_weight_kg * 35
         goal = _clamp(goal, 1500, 4500)
@@ -202,25 +209,25 @@ def _weekly_consistency(habit_checks, ref: date):
     ini, fim = _semana_range(ref, 7)
     df = pd.DataFrame(habit_checks)
     if df.empty:
-        return {"days_active": 0, "move_days": 0, "sleep_days": 0}
+        return {"days_cared": 0, "move_days": 0, "sleep_days": 0}
 
     df["date_dt"] = df["date"].apply(_to_date)
     df = df.dropna(subset=["date_dt"])
     df = df[(df["date_dt"] >= ini) & (df["date_dt"] <= fim)].copy()
     if df.empty:
-        return {"days_active": 0, "move_days": 0, "sleep_days": 0}
+        return {"days_cared": 0, "move_days": 0, "sleep_days": 0}
 
     move_days = int(df["move_done"].fillna(False).astype(bool).sum()) if "move_done" in df.columns else 0
     sleep_days = int(df["sleep_done"].fillna(False).astype(bool).sum()) if "sleep_done" in df.columns else 0
 
-    # dia ativo = move_done OU sleep_done (água não entra, pois é inferida por volume)
-    df["active_day"] = False
-    for col in ["move_done", "sleep_done"]:
+    # "dias cuidados" = move_done OU sleep_done (água é inferida por volume e não entra aqui)
+    df["cared_day"] = False
+    for col in ("move_done", "sleep_done"):
         if col in df.columns:
-            df["active_day"] = df["active_day"] | df[col].fillna(False).astype(bool)
+            df["cared_day"] = df["cared_day"] | df[col].fillna(False).astype(bool)
 
-    days_active = int(df["active_day"].sum())
-    return {"days_active": days_active, "move_days": move_days, "sleep_days": sleep_days}
+    cared = int(df["cared_day"].sum())
+    return {"days_cared": cared, "move_days": move_days, "sleep_days": sleep_days}
 
 
 # ----------------------------
@@ -241,10 +248,10 @@ def _quick_activity(label: str, minutes: int, intensity="leve"):
     })
     st.session_state.activity_logs = buscar_activity_logs()
 
-    # marca movimento como feito
     _upsert_today_habit(date.today(), {"move_done": True})
     st.session_state.habits = buscar_habit_checks()
 
+    _reset_ui_flags()
     st.toast("Corpo ativado.")
     st.rerun()
 
@@ -259,6 +266,11 @@ def render_saude():
         <div class="slogan">Painel de comando do corpo — simples, rápido e consistente</div>
       </div>
     """, unsafe_allow_html=True)
+
+    # init flags defensivos
+    for k in ("show_goal", "show_quick", "show_peso_quick"):
+        if k not in st.session_state:
+            st.session_state[k] = False
 
     # Estado inicial
     if "saude_cfg" not in st.session_state:
@@ -292,16 +304,14 @@ def render_saude():
     workout_hoje = _workout_today_exists(st.session_state.w_logs, hoje)
     move_infer = (act_min_hoje > 0) or workout_hoje
 
-    # Hábito do dia (apenas move/sleep são manuais; água é inferida)
+    # Hábito do dia (apenas move/sleep manuais; água é inferida)
     habit_today = _get_today_habit(st.session_state.habits, hoje)
     move_done = bool(habit_today.get("move_done")) if habit_today else False
     sleep_done = bool(habit_today.get("sleep_done")) if habit_today else False
 
-    # se já moveu por logs, reforça hábito
     if move_infer and not move_done:
         _upsert_today_habit(hoje, {"move_done": True})
         st.session_state.habits = buscar_habit_checks()
-        habit_today = _get_today_habit(st.session_state.habits, hoje)
         move_done = True
 
     tab_painel, tab_hist = st.tabs(["🧠 Painel", "📈 Histórico"])
@@ -310,7 +320,7 @@ def render_saude():
     # 🧠 PAINEL
     # =======================
     with tab_painel:
-        # Perfil (simples) em expander discreto
+        # Perfil simples (discreto)
         with st.expander("👤 Perfil (simples)", expanded=False):
             p = st.session_state.profile or {}
             age = st.number_input("Idade", min_value=0, max_value=120, value=_ensure_int(p.get("age", 0)), step=1)
@@ -322,7 +332,6 @@ def render_saude():
                 st.session_state.profile = buscar_saude_profile()
                 st.toast("Perfil atualizado.")
 
-        # 2 colunas (no mobile vira 1 por CSS)
         c1, c2 = st.columns(2)
 
         # 💧 ÁGUA
@@ -335,26 +344,22 @@ def render_saude():
             )
             st.progress(prog)
 
-            # Botão principal
             if st.button("Beber 250 ml", key="drink_250"):
                 _drink(250)
 
-            # secundários discretos
             bA, bB, bC = st.columns(3)
             if bA.button("+100", key="drink_100"): _drink(100)
             if bB.button("+500", key="drink_500"): _drink(500)
             if bC.button("Meta", key="water_goal_btn"):
                 st.session_state.show_goal = True
 
-            # Override de meta
-            if st.session_state.get("show_goal"):
+            if st.session_state.show_goal:
                 with st.expander("🎯 Ajustar meta (override)", expanded=True):
                     meta = st.number_input("Meta diária (ml)", min_value=0, step=100, value=int(agua_goal))
                     if st.button("Salvar meta", key="save_water_goal"):
-                        # mantém compatibilidade (legado)
                         upsert_saude_config({"water_goal_ml": int(meta)})
                         st.session_state.saude_cfg = buscar_saude_config()
-                        st.session_state.show_goal = False
+                        _reset_ui_flags()
                         st.toast("Meta atualizada.")
                         st.rerun()
 
@@ -369,7 +374,7 @@ def render_saude():
             if st.button("Treino rápido agora", key="quick_now"):
                 st.session_state.show_quick = True
 
-            if st.session_state.get("show_quick"):
+            if st.session_state.show_quick:
                 with st.expander("Escolha rápida (1 toque)", expanded=True):
                     q1, q2, q3 = st.columns(3)
                     if q1.button("Alongamento 5m", key="act_stretch_5"):
@@ -381,7 +386,7 @@ def render_saude():
 
         st.markdown("<div style='height:10px'></div>", unsafe_allow_html=True)
 
-        # ⚖️ PESO (Opção A — compacto no painel)
+        # ⚖️ PESO (compacto: Último + Δ7d + Registrar)
         last_w2, delta_7 = _last_weight_and_delta_7d(st.session_state.peso_logs, hoje)
 
         st.markdown(
@@ -402,7 +407,7 @@ def render_saude():
             if st.button("Registrar", key="peso_quick_open"):
                 st.session_state.show_peso_quick = True
 
-        if st.session_state.get("show_peso_quick"):
+        if st.session_state.show_peso_quick:
             with st.expander("Registrar peso (rápido)", expanded=True):
                 pdt = st.date_input("Data", value=hoje, key="peso_quick_date")
                 pw = st.number_input(
@@ -424,7 +429,7 @@ def render_saude():
                         "waist_cm": wc if (wc is not None and wc > 0) else None,
                     })
                     st.session_state.peso_logs = buscar_peso_logs()
-                    st.session_state.show_peso_quick = False
+                    _reset_ui_flags()
                     st.toast("Peso registrado.")
                     st.rerun()
 
@@ -436,6 +441,7 @@ def render_saude():
             "<span style='opacity:.85'>Registro rápido — sem calorias</span></div>",
             unsafe_allow_html=True
         )
+
         meals_today = _get_meals_today(st.session_state.meals, hoje)
 
         for meal in MEAL_ORDER:
@@ -474,7 +480,7 @@ def render_saude():
                 st.toast("Sono registrado.")
                 st.rerun()
 
-        # ✅ Hábitos do dia (motor) — água não é manual
+        # ✅ HÁBITOS DO DIA (água é inferida; botão salvar só se mudou)
         st.markdown(
             "<div class='card'><b>✅ Hábitos do dia</b><br>"
             "<span style='opacity:.85'>1 toque. Sem julgamento.</span></div>",
@@ -482,28 +488,39 @@ def render_saude():
         )
 
         hc1, hc2, hc3 = st.columns(3)
-        # Água: fonte única da verdade = volume ingerido (checkbox só visual)
+
+        # Água: fonte única da verdade = volume ingerido (checkbox visual, bloqueado)
         hc1.checkbox("Água", value=(agua_hoje >= agua_goal), disabled=True, key="chk_water")
-        move_chk = hc2.checkbox("Mover", value=move_done or move_infer, key="chk_move")
-        sleep_chk = hc3.checkbox("Dormir bem", value=sleep_done, key="chk_sleep")
 
-        if st.button("Salvar hábitos", key="save_habits"):
-            _upsert_today_habit(hoje, {"move_done": bool(move_chk), "sleep_done": bool(sleep_chk)})
-            st.session_state.habits = buscar_habit_checks()
-            st.toast("Salvo.")
+        # Estado atual (para decidir se mudou)
+        current_move = bool(move_done or move_infer)
+        current_sleep = bool(sleep_done)
 
-        # Consistência semanal (seca)
+        move_chk = hc2.checkbox("Mover", value=current_move, key="chk_move")
+        sleep_chk = hc3.checkbox("Dormir bem", value=current_sleep, key="chk_sleep")
+
+        changed = (bool(move_chk) != current_move) or (bool(sleep_chk) != current_sleep)
+
+        if changed:
+            if st.button("Salvar hábitos", key="save_habits"):
+                _upsert_today_habit(hoje, {"move_done": bool(move_chk), "sleep_done": bool(sleep_chk)})
+                st.session_state.habits = buscar_habit_checks()
+                st.toast("Salvo.")
+                st.rerun()
+        else:
+            st.caption("✔ Hábitos atualizados.")
+
         cons = _weekly_consistency(st.session_state.habits, hoje)
-        st.caption(f"📌 Semana: dias ativos **{cons['days_active']}/7** • Movimento **{cons['move_days']}** • Sono **{cons['sleep_days']}**")
+        st.caption(f"📌 Semana: dias cuidados **{cons['days_cared']}/7** • Movimento **{cons['move_days']}** • Sono **{cons['sleep_days']}**")
 
-        # Micro-insight discreto (sem coach) — e silencioso à noite
+        # Micro-insight discreto (sem coach) — silencioso à noite
         if not _quiet_hours():
             if agua_hoje < (0.5 * agua_goal):
                 st.caption("💡 Um copo agora (250 ml) já muda o dia.")
             elif not move_infer:
                 st.caption("💡 10 minutos de mobilidade ativam o corpo sem esforço.")
             else:
-                st.caption("💡 Está andando. Só continue.")
+                st.caption("💡 Consistência vence intensidade.")
 
     # =======================
     # 📈 HISTÓRICO
@@ -511,10 +528,9 @@ def render_saude():
     with tab_hist:
         st.markdown("### Histórico (seco e útil)")
 
-        hoje = date.today()
         ini14 = hoje - timedelta(days=13)
 
-        # Água últimos 14 dias (soma/dia) + linha de meta
+        # Água 14 dias (soma/dia) + linha de meta (MVP: meta atual como referência)
         dfa = pd.DataFrame(st.session_state.agua_logs)
         if not dfa.empty:
             dfa["date"] = dfa["date"].apply(_to_date)
@@ -523,13 +539,14 @@ def render_saude():
             agua_day = agua_day[(agua_day["date"] >= ini14) & (agua_day["date"] <= hoje)]
             if not agua_day.empty:
                 st.markdown("#### 💧 Água (14 dias)")
+                # MVP: meta atual como linha de referência (não histórica)
                 agua_day["goal_ml"] = int(agua_goal)
                 chart_df = agua_day.set_index("date")[["amount_ml", "goal_ml"]]
                 st.line_chart(chart_df, height=220)
         else:
             st.caption("Sem registros de água.")
 
-        # Atividades últimos 14 dias
+        # Movimento 14 dias (min/dia)
         dact = pd.DataFrame(st.session_state.activity_logs)
         if not dact.empty:
             dact["date"] = dact["date"].apply(_to_date)
@@ -540,7 +557,7 @@ def render_saude():
                 st.markdown("#### 🏃 Movimento (min/dia — 14 dias)")
                 st.line_chart(act_day.set_index("date")[["minutes"]], height=220)
 
-            with st.expander("Ver e excluir registros de atividade", expanded=False):
+            with st.expander("Ver e excluir registros de movimento", expanded=False):
                 for _, r in dact.sort_values("date", ascending=False).head(20).iterrows():
                     lid = int(r.get("id"))
                     dt_txt = r["date"].strftime("%d/%m/%Y") if pd.notnull(r["date"]) else "-"
@@ -565,14 +582,16 @@ def render_saude():
                 pivot = dfm14.pivot_table(index="date", columns="meal", values="quality", aggfunc="last")
                 st.dataframe(pivot, use_container_width=True)
 
-        # Peso 30 dias (gráfico) + últimas medições
+        # Peso 30 dias + últimas medições
         dfp = pd.DataFrame(st.session_state.peso_logs)
         if not dfp.empty:
             dfp["date"] = pd.to_datetime(dfp["date"], errors="coerce")
             dfp = dfp.dropna(subset=["date"]).sort_values("date")
+
             ult30 = dfp[dfp["date"] >= (pd.Timestamp(hoje) - pd.Timedelta(days=30))]
             if ult30.empty:
                 ult30 = dfp
+
             st.markdown("#### ⚖️ Peso (30 dias)")
             st.line_chart(ult30.set_index("date")[["weight_kg"]], height=220)
 
