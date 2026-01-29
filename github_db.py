@@ -783,6 +783,7 @@ def deletar_estudos_topic(topic_id: int) -> None:
     safe_update_json(estudos_path("topics"), updater, commit_message=f"delete estudos topic {topic_id}")
 
 # ---------- Logs de estudo ----------
+
 def inserir_estudos_log(reg: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
@@ -793,12 +794,14 @@ def inserir_estudos_log(reg: Dict[str, Any]) -> None:
         except Exception:
             raise ValueError("topic_id inválido")
 
+        # duração honesta: pode ser 0
         duration = reg.get("duration_min", 0)
         try:
             duration = int(duration)
         except Exception:
             duration = 0
-        duration = max(1, duration)
+        if duration < 0:
+            duration = 0
 
         result = (reg.get("result") or "partial").strip()
         if result not in ("all", "partial", "review"):
@@ -810,10 +813,13 @@ def inserir_estudos_log(reg: Dict[str, Any]) -> None:
             "start_at": reg.get("start_at"),
             "end_at": reg.get("end_at"),
             "duration_min": duration,
-            "result": result
+            "result": result,
+            # ✅ novo: já deixa explícito se conta para streak
+            "counts_for_streak": bool(duration >= 10),
         }
 
         obj.append(row)
         return obj
 
     safe_update_json(estudos_path("study_logs"), updater, commit_message="add estudos study_log")
+
