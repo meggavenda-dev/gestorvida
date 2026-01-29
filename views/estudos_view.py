@@ -107,18 +107,30 @@ def _df_topics():
     df["active"] = df["active"].fillna(True).astype(bool)
     return df
 
+
 def _df_logs():
     df = pd.DataFrame(st.session_state.est_logs)
     if df.empty:
-        df = pd.DataFrame(columns=["id","topic_id","start_at","end_at","duration_min","result"])
-    for c in ["id","topic_id","start_at","end_at","duration_min","result"]:
+        df = pd.DataFrame(columns=[
+            "id","topic_id","start_at","end_at","duration_min","result","counts_for_streak"
+        ])
+    for c in ["id","topic_id","start_at","end_at","duration_min","result","counts_for_streak"]:
         if c not in df.columns:
             df[c] = None
+
     df["topic_id"] = pd.to_numeric(df["topic_id"], errors="coerce").astype("Int64")
     df["duration_min"] = pd.to_numeric(df["duration_min"], errors="coerce").fillna(0).astype(int)
+
+    # compat: se não existir flag, cria pela regra atual (>=10 por sessão)
+    if "counts_for_streak" not in df.columns:
+        df["counts_for_streak"] = df["duration_min"].apply(lambda x: int(x) >= 10)
+    else:
+        df["counts_for_streak"] = df["counts_for_streak"].fillna(False).astype(bool)
+
     df["start_dt"] = df["start_at"].apply(_parse_iso_dt)
     df["start_date_local"] = df["start_dt"].apply(_to_local_date)
     return df
+
 
 def _progress_subject(df_topics_sub):
     if df_topics_sub.empty:
@@ -204,9 +216,14 @@ def _pick_today_topics(df_s, df_t, df_logs, limit=3):
 
     # flags de planejamento
     base["is_overdue"] = base["planned_date_dt"].notna() & (base["planned_date_dt"] < hoje)
-    base["is_today"] = base["planned_date_dt"].notna() & (base["planned_date_dt"] == hoje)
-    base["is_weekday"] = base["planned_weekdays"].apply(lambda lst: isinstance(lst, list) and (wday in lst))
-    base["has_plan"] = base["planned_date_dt"].notna() | base["planned_weekdays"].apply(lambda lst: isinstance(lst, list) and len(lst) > 0)
+    base["is_today"] = base["planned_date_dt"].notna() & (base["planned_date_dt"] == hoje)    
+    base["is_weekday"] = (~has_date) & base["planned_weekdays"].apply(
+        lambda lst: isinstance(lst, list) and (wday in lst)
+    )
+    
+    base["has_plan"] = has_date | base["planned_weekdays"].apply(
+        lambda lst: isinstance(lst, list) and len(lst) > 0
+    )
 
     # score: menor é melhor
     # 0 atrasado, 1 hoje, 2 dia semana, 3 sem plano (só entra se faltar)
