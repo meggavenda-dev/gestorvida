@@ -12,5 +12,12 @@
     "activity": "alongamento 5min",
     "minutes": 5,
     "intensity": "leve"
+  },
+  {
+    "id": 3,
+    "date": "2026-01-29",
+    "activity": "exercício rápido 15min",
+    "minutes": 15,
+    "intensity": "moderada"
   }
 ]
