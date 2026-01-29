@@ -1,1 +1,25 @@
-[]
+[
+  {
+    "id": 1,
+    "subject_id": 1,
+    "title": "Testar",
+    "order": 1,
+    "status": "todo",
+    "planned_date": "2026-01-29",
+    "planned_weekdays": [
+      0,
+      2,
+      3,
+      4,
+      5,
+      6,
+      1
+    ],
+    "notes": "",
+    "review": false,
+    "active": true,
+    "last_studied_at": null,
+    "created_at": "2026-01-29T12:20:06.194702Z",
+    "updated_at": "2026-01-29T12:20:06.194702Z"
+  }
+]
