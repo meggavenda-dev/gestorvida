@@ -16,6 +16,10 @@ from datetime import datetime
 GITHUB_API = "https://api.github.com"
 DEFAULT_TIMEOUT = 30
 
+# ✅ Reaproveita conexão HTTP (melhora tempo de GET/PUT)
+SESSION = requests.Session()
+
+
 # ---------------------------------------------
 #  GITHUB CORE
 # ---------------------------------------------
@@ -25,11 +29,13 @@ def gh_headers() -> Dict[str, str]:
         "Accept": "application/vnd.github+json"
     }
 
+
 def gh_repo_info() -> Tuple[str, str, str]:
     owner = st.secrets["GITHUB_OWNER"]
     repo = st.secrets["GITHUB_REPO"]
     branch = st.secrets.get("GITHUB_BRANCH", "main")
     return owner, repo, branch
+
 
 def gh_get_file(path: str) -> Tuple[Optional[Any], Optional[str]]:
     """
@@ -39,7 +45,7 @@ def gh_get_file(path: str) -> Tuple[Optional[Any], Optional[str]]:
     url = f"{GITHUB_API}/repos/{owner}/{repo}/contents/{path}?ref={branch}"
 
     try:
-        r = requests.get(url, headers=gh_headers(), timeout=DEFAULT_TIMEOUT)
+        r = SESSION.get(url, headers=gh_headers(), timeout=DEFAULT_TIMEOUT)
     except Exception as e:
         st.error(f"[GitHub] Falha de rede ao ler {path}: {e}")
         return None, None
@@ -58,6 +64,7 @@ def gh_get_file(path: str) -> Tuple[Optional[Any], Optional[str]]:
 
     st.error(f"[GitHub] Erro ao ler {path}: {r.status_code} {r.text}")
     return None, None
+
 
 def gh_put_file(path: str, obj: Any, message: str, sha: Optional[str]) -> Optional[str]:
     """
@@ -80,7 +87,7 @@ def gh_put_file(path: str, obj: Any, message: str, sha: Optional[str]) -> Option
         payload["sha"] = sha
 
     try:
-        r = requests.put(url, headers=gh_headers(), json=payload, timeout=DEFAULT_TIMEOUT)
+        r = SESSION.put(url, headers=gh_headers(), json=payload, timeout=DEFAULT_TIMEOUT)
     except Exception as e:
         st.error(f"[GitHub] Falha de rede ao gravar {path}: {e}")
         return None
@@ -98,6 +105,7 @@ def gh_put_file(path: str, obj: Any, message: str, sha: Optional[str]) -> Option
     st.error(f"[GitHub] Erro ao gravar {path}: {r.status_code} {r.text}")
     return None
 
+
 def safe_update_json(
     path: str,
     updater: Callable[[Optional[Any]], Any],
@@ -107,6 +115,7 @@ def safe_update_json(
 ) -> Tuple[Optional[Any], Optional[str]]:
     """
     Lê (obj, sha) -> aplica updater(obj) -> grava com sha -> retry em conflito/falha.
+
     Estratégia:
     - 409 (conflito) tenta novamente com jitter
     - mostra erro somente após esgotar tentativas
@@ -126,7 +135,6 @@ def safe_update_json(
         if new_sha:
             return new_obj, new_sha
 
-        # se não gravou, pode ter sido conflito 409 ou outra falha silenciosa
         last_err = f"tentativa {attempt+1}/{max_retries} falhou (possível conflito/concorrência)."
 
         # jitter reduz colisão entre sessões/reruns
@@ -134,6 +142,7 @@ def safe_update_json(
 
     st.error(f"[GitHub] Não foi possível atualizar {path} após {max_retries} tentativas. {last_err or ''}")
     return None, None
+
 
 # ---------------------------------------------
 #  BASES (podem ser customizadas via secrets)
@@ -143,22 +152,28 @@ TASKS_BASE   = st.secrets.get("GITHUB_TASKS_BASE",   "data/tarefas")
 SAUDE_BASE   = st.secrets.get("GITHUB_SAUDE_BASE",   "data/saude")
 ESTUDOS_BASE = st.secrets.get("GITHUB_ESTUDOS_BASE", "data/estudos")
 
+
 def fin_path(name: str) -> str:
     return f"{FIN_BASE}/{name}.json"
+
 
 def tasks_path(name: str) -> str:
     return f"{TASKS_BASE}/{name}.json"
 
+
 def saude_path(name: str) -> str:
     return f"{SAUDE_BASE}/{name}.json"
 
+
 def estudos_path(name: str) -> str:
     return f"{ESTUDOS_BASE}/{name}.json"
+
 
 # =================================================
 #                    FINANCEIRO
 # =================================================
 TRANS_COLS = ['id', 'data', 'descricao', 'valor', 'tipo', 'categoria', 'status', 'responsavel']
+
 
 def _normalize_transacoes_df(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
@@ -180,6 +195,7 @@ def _normalize_transacoes_df(df: pd.DataFrame) -> pd.DataFrame:
 
     return df[TRANS_COLS]
 
+
 def buscar_pessoas() -> List[str]:
     obj, _ = gh_get_file(fin_path("pessoas"))
     if obj and isinstance(obj, list):
@@ -187,12 +203,14 @@ def buscar_pessoas() -> List[str]:
         return nomes + ["Ambos"]
     return ["Guilherme", "Alynne", "Ambos"]
 
+
 def buscar_dados() -> pd.DataFrame:
     obj, _ = gh_get_file(fin_path("transacoes"))
     if not obj:
         return pd.DataFrame(columns=TRANS_COLS)
     df = pd.DataFrame(obj)
     return _normalize_transacoes_df(df)
+
 
 def inserir_transacao(reg: Dict[str, Any]) -> None:
     def updater(obj):
@@ -204,6 +222,7 @@ def inserir_transacao(reg: Dict[str, Any]) -> None:
         return obj
     safe_update_json(fin_path("transacoes"), updater, commit_message="add transacao")
 
+
 def atualizar_transacao(trans_id: int, patch: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
@@ -213,15 +232,18 @@ def atualizar_transacao(trans_id: int, patch: Dict[str, Any]) -> None:
         return obj
     safe_update_json(fin_path("transacoes"), updater, commit_message=f"update transacao {trans_id}")
 
+
 def deletar_transacao(trans_id: int) -> None:
     def updater(obj):
         obj = obj or []
         return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(trans_id))]
     safe_update_json(fin_path("transacoes"), updater, commit_message=f"delete transacao {trans_id}")
 
+
 def buscar_metas() -> Dict[str, float]:
     obj, _ = gh_get_file(fin_path("metas"))
     return obj if isinstance(obj, dict) else {}
+
 
 def upsert_meta(categoria: str, limite: float) -> None:
     def updater(obj):
@@ -229,6 +251,7 @@ def upsert_meta(categoria: str, limite: float) -> None:
         obj[categoria] = float(limite)
         return obj
     safe_update_json(fin_path("metas"), updater, commit_message=f"upsert meta {categoria}")
+
 
 def buscar_fixos() -> pd.DataFrame:
     obj, _ = gh_get_file(fin_path("fixos"))
@@ -240,6 +263,7 @@ def buscar_fixos() -> pd.DataFrame:
     df['responsavel'] = df['responsavel'].fillna('Ambos').astype(str)
     return df
 
+
 def inserir_fixo(reg: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
@@ -250,6 +274,7 @@ def inserir_fixo(reg: Dict[str, Any]) -> None:
         return obj
     safe_update_json(fin_path("fixos"), updater, commit_message="add fixo")
 
+
 def atualizar_fixo(fixo_id: int, patch: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
@@ -259,11 +284,13 @@ def atualizar_fixo(fixo_id: int, patch: Dict[str, Any]) -> None:
         return obj
     safe_update_json(fin_path("fixos"), updater, commit_message=f"update fixo {fixo_id}")
 
+
 def deletar_fixo(fixo_id: int) -> None:
     def updater(obj):
         obj = obj or []
         return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(fixo_id))]
     safe_update_json(fin_path("fixos"), updater, commit_message=f"delete fixo {fixo_id}")
+
 
 # =================================================
 #                      TAREFAS
@@ -303,6 +330,7 @@ def _normalize_task_row(r: Dict[str, Any]) -> Dict[str, Any]:
 
     return rr
 
+
 def buscar_tasks() -> List[Dict[str, Any]]:
     obj, _ = gh_get_file(tasks_path("tasks"))
     if not obj or not isinstance(obj, list):
@@ -312,6 +340,7 @@ def buscar_tasks() -> List[Dict[str, Any]]:
         if isinstance(r, dict) and r.get("id") is not None:
             out.append(_normalize_task_row(r))
     return out
+
 
 def inserir_task(reg: Dict[str, Any]) -> bool:
     """
@@ -346,29 +375,48 @@ def inserir_task(reg: Dict[str, Any]) -> bool:
         obj.append(reg2)
         return obj
 
-    new_obj, new_sha = safe_update_json(
+    _obj, new_sha = safe_update_json(
         tasks_path("tasks"),
         updater,
         commit_message="add task",
-        max_retries=15,   # <- aumenta para concorrência real
+        max_retries=15,   # concorrência real (2 dispositivos)
         delay=0.5
     )
     return bool(new_sha)
 
-def atualizar_task(task_id: int, patch: Dict[str, Any]) -> None:
+
+def atualizar_task(task_id: int, patch: Dict[str, Any]) -> bool:
+    """
+    Atualiza tarefa e retorna True se gravou.
+    """
     def updater(obj):
-        obj = obj or []
+        obj = obj if isinstance(obj, list) else []
         for r in obj:
             if isinstance(r, dict) and int(r.get("id", -1)) == int(task_id):
                 r.update(dict(patch))
         return obj
-    safe_update_json(tasks_path("tasks"), updater, commit_message=f"update task {task_id}")
 
-def deletar_task(task_id: int) -> None:
+    _obj, new_sha = safe_update_json(tasks_path("tasks"), updater, commit_message=f"update task {task_id}")
+    return bool(new_sha)
+
+
+def deletar_task(task_id: int) -> bool:
+    """
+    Delete mais responsivo (menos retries e delay menor) e retorna bool.
+    """
     def updater(obj):
-        obj = obj or []
+        obj = obj if isinstance(obj, list) else []
         return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(task_id))]
-    safe_update_json(tasks_path("tasks"), updater, commit_message=f"delete task {task_id}")
+
+    _obj, new_sha = safe_update_json(
+        tasks_path("tasks"),
+        updater,
+        commit_message=f"delete task {task_id}",
+        max_retries=5,   # ✅ rápido
+        delay=0.25       # ✅ rápido
+    )
+    return bool(new_sha)
+
 
 # =================================================
 #                       SAÚDE (LEGADO: HÁBITOS)
@@ -390,6 +438,7 @@ def _ensure_recurrence_dict_or_none(value: Any) -> Optional[dict]:
             return {"type": "weekly", "days": days_norm}
         return None
     return None
+
 
 def buscar_habitos() -> List[Dict[str, Any]]:
     obj, _ = gh_get_file(saude_path("habits"))
@@ -414,6 +463,7 @@ def buscar_habitos() -> List[Dict[str, Any]]:
         out.append({"id": rid, "name": name, "target_per_day": tgt, "unit": unit, "recurrence": rec})
     return out
 
+
 def inserir_habito(reg: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
@@ -428,6 +478,7 @@ def inserir_habito(reg: Dict[str, Any]) -> None:
         obj.append({"id": new_id, "name": name, "unit": unit, "target_per_day": target, "recurrence": recurrence})
         return obj
     safe_update_json(saude_path("habits"), updater, commit_message="add habit")
+
 
 def atualizar_habito(habit_id: int, patch: Dict[str, Any]) -> None:
     def updater(obj):
@@ -459,11 +510,13 @@ def atualizar_habito(habit_id: int, patch: Dict[str, Any]) -> None:
         return out
     safe_update_json(saude_path("habits"), updater, commit_message=f"update habit {habit_id}")
 
+
 def deletar_habito(habit_id: int) -> None:
     def updater(obj):
         obj = obj or []
         return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(habit_id))]
     safe_update_json(saude_path("habits"), updater, commit_message=f"delete habit {habit_id}")
+
 
 def buscar_habit_logs() -> List[Dict[str, Any]]:
     obj, _ = gh_get_file(saude_path("habit_logs"))
@@ -486,6 +539,7 @@ def buscar_habit_logs() -> List[Dict[str, Any]]:
         out.append({"id": log_id, "habit_id": habit_id, "date": date_str, "amount": amount})
     return out
 
+
 def inserir_habit_log(reg: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
@@ -502,6 +556,7 @@ def inserir_habit_log(reg: Dict[str, Any]) -> None:
         obj.append({"id": new_id, "habit_id": habit_id, "date": date_str, "amount": amount})
         return obj
     safe_update_json(saude_path("habit_logs"), updater, commit_message="add habit_log")
+
 
 def atualizar_habit_log(log_id: int, patch: Dict[str, Any]) -> None:
     def updater(obj):
@@ -531,11 +586,13 @@ def atualizar_habit_log(log_id: int, patch: Dict[str, Any]) -> None:
         return out
     safe_update_json(saude_path("habit_logs"), updater, commit_message=f"update habit_log {log_id}")
 
+
 def deletar_habit_log(log_id: int) -> None:
     def updater(obj):
         obj = obj or []
         return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(log_id))]
     safe_update_json(saude_path("habit_logs"), updater, commit_message=f"delete habit_log {log_id}")
+
 
 # =================================================
 #          SAÚDE (NOVA): PESO / ÁGUA / TREINOS / CONFIG
@@ -562,6 +619,7 @@ def buscar_peso_logs() -> List[Dict[str, Any]]:
         })
     return out
 
+
 def inserir_peso(reg: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
@@ -579,6 +637,7 @@ def inserir_peso(reg: Dict[str, Any]) -> None:
         return obj
     safe_update_json(saude_path("weight_logs"), updater, commit_message="add weight_log")
 
+
 def atualizar_peso(log_id: int, patch: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
@@ -595,11 +654,13 @@ def atualizar_peso(log_id: int, patch: Dict[str, Any]) -> None:
         return obj
     safe_update_json(saude_path("weight_logs"), updater, commit_message=f"update weight_log {log_id}")
 
+
 def deletar_peso(log_id: int) -> None:
     def updater(obj):
         obj = obj or []
         return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(log_id))]
     safe_update_json(saude_path("weight_logs"), updater, commit_message=f"delete weight_log {log_id}")
+
 
 def buscar_agua_logs() -> List[Dict[str, Any]]:
     obj, _ = gh_get_file(saude_path("water_logs"))
@@ -617,6 +678,7 @@ def buscar_agua_logs() -> List[Dict[str, Any]]:
         out.append({"id": rid, "date": r.get("date"), "amount_ml": amt})
     return out
 
+
 def inserir_agua(reg: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
@@ -626,6 +688,7 @@ def inserir_agua(reg: Dict[str, Any]) -> None:
         obj.append({"id": new_id, "date": date_str, "amount_ml": amt})
         return obj
     safe_update_json(saude_path("water_logs"), updater, commit_message="add water_log")
+
 
 def atualizar_agua(log_id: int, patch: Dict[str, Any]) -> None:
     def updater(obj):
@@ -639,15 +702,18 @@ def atualizar_agua(log_id: int, patch: Dict[str, Any]) -> None:
         return obj
     safe_update_json(saude_path("water_logs"), updater, commit_message=f"update water_log {log_id}")
 
+
 def deletar_agua(log_id: int) -> None:
     def updater(obj):
         obj = obj or []
         return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(log_id))]
     safe_update_json(saude_path("water_logs"), updater, commit_message=f"delete water_log {log_id}")
 
+
 def buscar_saude_config() -> Dict[str, Any]:
     obj, _ = gh_get_file(saude_path("saude_config"))
     return obj if isinstance(obj, dict) else {}
+
 
 def upsert_saude_config(patch: Dict[str, Any]) -> None:
     def updater(obj):
@@ -657,6 +723,7 @@ def upsert_saude_config(patch: Dict[str, Any]) -> None:
             out[k] = v
         return out
     safe_update_json(saude_path("saude_config"), updater, commit_message="upsert saude_config")
+
 
 def buscar_workout_logs() -> List[Dict[str, Any]]:
     obj, _ = gh_get_file(saude_path("workout_logs"))
@@ -683,6 +750,7 @@ def buscar_workout_logs() -> List[Dict[str, Any]]:
         })
     return out
 
+
 def inserir_workout_log(reg: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
@@ -700,6 +768,7 @@ def inserir_workout_log(reg: Dict[str, Any]) -> None:
         obj.append(row)
         return obj
     safe_update_json(saude_path("workout_logs"), updater, commit_message="add workout_log")
+
 
 def atualizar_workout_log(log_id: int, patch: Dict[str, Any]) -> None:
     def updater(obj):
@@ -721,11 +790,13 @@ def atualizar_workout_log(log_id: int, patch: Dict[str, Any]) -> None:
         return obj
     safe_update_json(saude_path("workout_logs"), updater, commit_message=f"update workout_log {log_id}")
 
+
 def deletar_workout_log(log_id: int) -> None:
     def updater(obj):
         obj = obj or []
         return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(log_id))]
     safe_update_json(saude_path("workout_logs"), updater, commit_message=f"delete workout_log {log_id}")
+
 
 # =================================================
 #            ESTUDOS (NOVO - SIMPLES + ESTÍMULO)
@@ -735,13 +806,16 @@ def buscar_estudos_subjects() -> List[Dict[str, Any]]:
     obj, _ = gh_get_file(estudos_path("subjects"))
     return obj if isinstance(obj, list) else []
 
+
 def buscar_estudos_topics() -> List[Dict[str, Any]]:
     obj, _ = gh_get_file(estudos_path("topics"))
     return obj if isinstance(obj, list) else []
 
+
 def buscar_estudos_logs() -> List[Dict[str, Any]]:
     obj, _ = gh_get_file(estudos_path("study_logs"))
     return obj if isinstance(obj, list) else []
+
 
 def inserir_estudos_subject(reg: Dict[str, Any]) -> None:
     def updater(obj):
@@ -762,6 +836,7 @@ def inserir_estudos_subject(reg: Dict[str, Any]) -> None:
 
     safe_update_json(estudos_path("subjects"), updater, commit_message="add estudos subject")
 
+
 def atualizar_estudos_subject(subject_id: int, patch: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
@@ -778,6 +853,7 @@ def atualizar_estudos_subject(subject_id: int, patch: Dict[str, Any]) -> None:
 
     safe_update_json(estudos_path("subjects"), updater, commit_message=f"update estudos subject {subject_id}")
 
+
 def deletar_estudos_subject(subject_id: int) -> None:
     def upd_sub(obj):
         obj = obj or []
@@ -790,6 +866,7 @@ def deletar_estudos_subject(subject_id: int) -> None:
         return [t for t in obj if not (isinstance(t, dict) and int(t.get("subject_id", -1)) == int(subject_id))]
 
     safe_update_json(estudos_path("topics"), upd_topics, commit_message=f"delete topics from subject {subject_id}")
+
 
 def inserir_estudos_topic(reg: Dict[str, Any]) -> None:
     def updater(obj):
@@ -806,7 +883,6 @@ def inserir_estudos_topic(reg: Dict[str, Any]) -> None:
         if not title:
             raise ValueError("title inválido")
 
-        # order padrão: último dentro da matéria
         try:
             default_order = 1
             same = [x for x in obj if isinstance(x, dict) and int(x.get("subject_id", -1)) == subject_id]
@@ -855,6 +931,7 @@ def inserir_estudos_topic(reg: Dict[str, Any]) -> None:
 
     safe_update_json(estudos_path("topics"), updater, commit_message="add estudos topic")
 
+
 def atualizar_estudos_topic(topic_id: int, patch: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
@@ -894,12 +971,14 @@ def atualizar_estudos_topic(topic_id: int, patch: Dict[str, Any]) -> None:
 
     safe_update_json(estudos_path("topics"), updater, commit_message=f"update estudos topic {topic_id}")
 
+
 def deletar_estudos_topic(topic_id: int) -> None:
     def updater(obj):
         obj = obj or []
         return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(topic_id))]
 
     safe_update_json(estudos_path("topics"), updater, commit_message=f"delete estudos topic {topic_id}")
+
 
 def inserir_estudos_log(reg: Dict[str, Any]) -> None:
     def updater(obj):
@@ -938,25 +1017,30 @@ def inserir_estudos_log(reg: Dict[str, Any]) -> None:
 
     safe_update_json(estudos_path("study_logs"), updater, commit_message="add estudos study_log")
 
+
 # =================================================
 #          SAÚDE (PAINEL): PERFIL / REFEIÇÕES / HÁBITOS / ATIVIDADES
 # =================================================
 def saude_profile_path() -> str:
     return saude_path("profile")
 
+
 def saude_meals_path() -> str:
     return saude_path("meals")
+
 
 def saude_habits_path() -> str:
     return saude_path("habit_checks")
 
+
 def saude_activity_path() -> str:
     return saude_path("activity_logs")
 
-# --------- PERFIL ----------
+
 def buscar_saude_profile() -> Dict[str, Any]:
     obj, _ = gh_get_file(saude_profile_path())
     return obj if isinstance(obj, dict) else {}
+
 
 def upsert_saude_profile(patch: Dict[str, Any]) -> None:
     def updater(obj):
@@ -966,10 +1050,11 @@ def upsert_saude_profile(patch: Dict[str, Any]) -> None:
         return out
     safe_update_json(saude_profile_path(), updater, commit_message="upsert saude profile")
 
-# --------- REFEIÇÕES ----------
+
 def buscar_meals() -> List[Dict[str, Any]]:
     obj, _ = gh_get_file(saude_meals_path())
     return obj if isinstance(obj, list) else []
+
 
 def inserir_meal(reg: Dict[str, Any]) -> None:
     def updater(obj):
@@ -986,6 +1071,7 @@ def inserir_meal(reg: Dict[str, Any]) -> None:
         return obj
     safe_update_json(saude_meals_path(), updater, commit_message="add meal")
 
+
 def atualizar_meal(meal_id: int, patch: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
@@ -995,16 +1081,18 @@ def atualizar_meal(meal_id: int, patch: Dict[str, Any]) -> None:
         return obj
     safe_update_json(saude_meals_path(), updater, commit_message=f"update meal {meal_id}")
 
+
 def deletar_meal(meal_id: int) -> None:
     def updater(obj):
         obj = obj or []
         return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(meal_id))]
     safe_update_json(saude_meals_path(), updater, commit_message=f"delete meal {meal_id}")
 
-# --------- HÁBITOS (1 registro por dia) ----------
+
 def buscar_habit_checks() -> List[Dict[str, Any]]:
     obj, _ = gh_get_file(saude_habits_path())
     return obj if isinstance(obj, list) else []
+
 
 def upsert_habit_check(date_str: str, patch: Dict[str, Any]) -> None:
     def updater(obj):
@@ -1024,10 +1112,11 @@ def upsert_habit_check(date_str: str, patch: Dict[str, Any]) -> None:
 
     safe_update_json(saude_habits_path(), updater, commit_message=f"upsert habit_check {date_str}")
 
-# --------- ATIVIDADES (movimento simples) ----------
+
 def buscar_activity_logs() -> List[Dict[str, Any]]:
     obj, _ = gh_get_file(saude_activity_path())
     return obj if isinstance(obj, list) else []
+
 
 def inserir_activity_log(reg: Dict[str, Any]) -> None:
     def updater(obj):
@@ -1043,6 +1132,7 @@ def inserir_activity_log(reg: Dict[str, Any]) -> None:
         obj.append(row)
         return obj
     safe_update_json(saude_activity_path(), updater, commit_message="add activity_log")
+
 
 def deletar_activity_log(log_id: int) -> None:
     def updater(obj):
