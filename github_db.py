@@ -1,16 +1,20 @@
 # github_db.py
 # -*- coding: utf-8 -*-
+from __future__ import annotations
+
 import base64
 import json
 import time
+import random
 from typing import Tuple, Any, Optional, Callable, Dict, List
 
 import requests
 import streamlit as st
 import pandas as pd
-from datetime import date, datetime
+from datetime import datetime
 
 GITHUB_API = "https://api.github.com"
+DEFAULT_TIMEOUT = 30
 
 # ---------------------------------------------
 #  GITHUB CORE
@@ -28,49 +32,90 @@ def gh_repo_info() -> Tuple[str, str, str]:
     return owner, repo, branch
 
 def gh_get_file(path: str) -> Tuple[Optional[Any], Optional[str]]:
+    """
+    Lê JSON no GitHub (contents API) e retorna (obj, sha).
+    """
     owner, repo, branch = gh_repo_info()
     url = f"{GITHUB_API}/repos/{owner}/{repo}/contents/{path}?ref={branch}"
-    r = requests.get(url, headers=gh_headers(), timeout=30)
-    if r.status_code == 200:
-        data = r.json()
-        content = base64.b64decode(data["content"]).decode("utf-8")
-        return json.loads(content), data["sha"]
-    elif r.status_code == 404:
-        return None, None
-    else:
-        st.error(f"[GitHub] Erro ao ler {path}: {r.status_code} {r.text}")
+
+    try:
+        r = requests.get(url, headers=gh_headers(), timeout=DEFAULT_TIMEOUT)
+    except Exception as e:
+        st.error(f"[GitHub] Falha de rede ao ler {path}: {e}")
         return None, None
 
+    if r.status_code == 200:
+        try:
+            data = r.json()
+            content = base64.b64decode(data["content"]).decode("utf-8")
+            return json.loads(content), data["sha"]
+        except Exception as e:
+            st.error(f"[GitHub] Erro ao decodificar JSON de {path}: {e}")
+            return None, None
+
+    if r.status_code == 404:
+        return None, None
+
+    st.error(f"[GitHub] Erro ao ler {path}: {r.status_code} {r.text}")
+    return None, None
+
 def gh_put_file(path: str, obj: Any, message: str, sha: Optional[str]) -> Optional[str]:
+    """
+    Grava JSON no GitHub (contents API).
+    Retorna novo sha ou None.
+    Obs.: 409 (conflito SHA) retorna None silenciosamente para permitir retry.
+    """
     owner, repo, branch = gh_repo_info()
     url = f"{GITHUB_API}/repos/{owner}/{repo}/contents/{path}"
 
     content_str = json.dumps(obj, ensure_ascii=False, indent=2)
     content_b64 = base64.b64encode(content_str.encode("utf-8")).decode("utf-8")
 
-    payload = {"message": message or f"update {path}", "content": content_b64, "branch": branch}
+    payload = {
+        "message": message or f"update {path}",
+        "content": content_b64,
+        "branch": branch
+    }
     if sha:
         payload["sha"] = sha
 
-    r = requests.put(url, headers=gh_headers(), json=payload, timeout=30)
-    if r.status_code in (200, 201):
-        return r.json()["content"]["sha"]
-    else:
-        st.error(f"[GitHub] Erro ao gravar {path}: {r.status_code} {r.text}")
+    try:
+        r = requests.put(url, headers=gh_headers(), json=payload, timeout=DEFAULT_TIMEOUT)
+    except Exception as e:
+        st.error(f"[GitHub] Falha de rede ao gravar {path}: {e}")
         return None
+
+    if r.status_code in (200, 201):
+        try:
+            return r.json()["content"]["sha"]
+        except Exception:
+            return None
+
+    # ✅ 409 = conflito SHA (arquivo mudou entre GET e PUT). Deixa retry cuidar.
+    if r.status_code == 409:
+        return None
+
+    st.error(f"[GitHub] Erro ao gravar {path}: {r.status_code} {r.text}")
+    return None
 
 def safe_update_json(
     path: str,
     updater: Callable[[Optional[Any]], Any],
     commit_message: str = "",
-    max_retries: int = 3,
-    delay: float = 0.8
+    max_retries: int = 8,
+    delay: float = 0.6
 ) -> Tuple[Optional[Any], Optional[str]]:
     """
-    Lê (obj, sha) -> aplica updater(obj) -> grava com sha -> retry em caso de conflito/falha.
+    Lê (obj, sha) -> aplica updater(obj) -> grava com sha -> retry em conflito/falha.
+    Estratégia:
+    - 409 (conflito) tenta novamente com jitter
+    - mostra erro somente após esgotar tentativas
     """
-    for _attempt in range(max_retries):
+    last_err: Optional[str] = None
+
+    for attempt in range(max_retries):
         obj, sha = gh_get_file(path)
+
         try:
             new_obj = updater(obj)
         except Exception as e:
@@ -81,9 +126,13 @@ def safe_update_json(
         if new_sha:
             return new_obj, new_sha
 
-        time.sleep(delay)
+        # se não gravou, pode ter sido conflito 409 ou outra falha silenciosa
+        last_err = f"tentativa {attempt+1}/{max_retries} falhou (possível conflito/concorrência)."
 
-    st.error(f"[GitHub] Não foi possível atualizar {path} após {max_retries} tentativas.")
+        # jitter reduz colisão entre sessões/reruns
+        time.sleep(delay * (1.0 + random.random() * 0.7))
+
+    st.error(f"[GitHub] Não foi possível atualizar {path} após {max_retries} tentativas. {last_err or ''}")
     return None, None
 
 # ---------------------------------------------
@@ -114,16 +163,21 @@ TRANS_COLS = ['id', 'data', 'descricao', 'valor', 'tipo', 'categoria', 'status',
 def _normalize_transacoes_df(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return pd.DataFrame(columns=TRANS_COLS)
+
     df['data'] = pd.to_datetime(df['data'], errors='coerce')
+
     if 'status' not in df.columns:
         df['status'] = 'Pago'
     df['status'] = df['status'].fillna('Pago').astype(str)
+
     if 'responsavel' not in df.columns:
         df['responsavel'] = 'Ambos'
     df['responsavel'] = df['responsavel'].fillna('Ambos').astype(str)
+
     for c in TRANS_COLS:
         if c not in df.columns:
             df[c] = None
+
     return df[TRANS_COLS]
 
 def buscar_pessoas() -> List[str]:
@@ -214,9 +268,50 @@ def deletar_fixo(fixo_id: int) -> None:
 # =================================================
 #                      TAREFAS
 # =================================================
+def _normalize_task_row(r: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Mantém compatibilidade com registros antigos e garante defaults
+    para a nova UX (type/event/start_at/tags/priority/recurrence etc).
+    """
+    rr = dict(r)
+
+    rr.setdefault("title", "")
+    rr.setdefault("description", "")
+    rr.setdefault("assignee", rr.get("assignee", "Ambos") or "Ambos")
+    rr.setdefault("status", rr.get("status", "todo") or "todo")
+
+    # Novo modelo
+    rr.setdefault("type", rr.get("type", "task") or "task")  # task|event
+    rr.setdefault("due_at", rr.get("due_at", None))
+    rr.setdefault("start_at", rr.get("start_at", None))
+    rr.setdefault("end_at", rr.get("end_at", None))
+
+    rr.setdefault("priority", rr.get("priority", "normal") or "normal")  # normal|important
+    rr.setdefault("tags", rr.get("tags", []) or [])
+    if not isinstance(rr["tags"], list):
+        rr["tags"] = []
+
+    rr.setdefault("recurrence", rr.get("recurrence", None))
+    rr.setdefault("context", rr.get("context", None))
+    rr.setdefault("reminders", rr.get("reminders", []) or [])
+    if not isinstance(rr["reminders"], list):
+        rr["reminders"] = []
+
+    rr.setdefault("created_at", rr.get("created_at"))
+    rr.setdefault("updated_at", rr.get("updated_at"))
+    rr.setdefault("completed_at", rr.get("completed_at"))
+
+    return rr
+
 def buscar_tasks() -> List[Dict[str, Any]]:
     obj, _ = gh_get_file(tasks_path("tasks"))
-    return obj if isinstance(obj, list) else []
+    if not obj or not isinstance(obj, list):
+        return []
+    out: List[Dict[str, Any]] = []
+    for r in obj:
+        if isinstance(r, dict) and r.get("id") is not None:
+            out.append(_normalize_task_row(r))
+    return out
 
 def inserir_task(reg: Dict[str, Any]) -> None:
     def updater(obj):
@@ -226,6 +321,11 @@ def inserir_task(reg: Dict[str, Any]) -> None:
         reg2['id'] = new_id
         reg2.setdefault('status', 'todo')
         reg2.setdefault('assignee', 'Ambos')
+        reg2.setdefault('type', 'task')
+        reg2.setdefault('priority', 'normal')
+        reg2.setdefault('tags', [])
+        reg2.setdefault('recurrence', None)
+        reg2.setdefault('reminders', [])
         obj.append(reg2)
         return obj
     safe_update_json(tasks_path("tasks"), updater, commit_message="add task")
@@ -618,7 +718,6 @@ def buscar_estudos_logs() -> List[Dict[str, Any]]:
     obj, _ = gh_get_file(estudos_path("study_logs"))
     return obj if isinstance(obj, list) else []
 
-# ---------- Matérias ----------
 def inserir_estudos_subject(reg: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
@@ -655,10 +754,6 @@ def atualizar_estudos_subject(subject_id: int, patch: Dict[str, Any]) -> None:
     safe_update_json(estudos_path("subjects"), updater, commit_message=f"update estudos subject {subject_id}")
 
 def deletar_estudos_subject(subject_id: int) -> None:
-    """
-    Remove matéria e também remove tópicos associados.
-    (Se você quiser arquivar em vez de apagar, eu ajusto em 2 linhas.)
-    """
     def upd_sub(obj):
         obj = obj or []
         return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(subject_id))]
@@ -671,7 +766,6 @@ def deletar_estudos_subject(subject_id: int) -> None:
 
     safe_update_json(estudos_path("topics"), upd_topics, commit_message=f"delete topics from subject {subject_id}")
 
-# ---------- Tópicos ----------
 def inserir_estudos_topic(reg: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
@@ -782,8 +876,6 @@ def deletar_estudos_topic(topic_id: int) -> None:
 
     safe_update_json(estudos_path("topics"), updater, commit_message=f"delete estudos topic {topic_id}")
 
-# ---------- Logs de estudo ----------
-
 def inserir_estudos_log(reg: Dict[str, Any]) -> None:
     def updater(obj):
         obj = obj or []
@@ -794,7 +886,6 @@ def inserir_estudos_log(reg: Dict[str, Any]) -> None:
         except Exception:
             raise ValueError("topic_id inválido")
 
-        # duração honesta: pode ser 0
         duration = reg.get("duration_min", 0)
         try:
             duration = int(duration)
@@ -814,7 +905,6 @@ def inserir_estudos_log(reg: Dict[str, Any]) -> None:
             "end_at": reg.get("end_at"),
             "duration_min": duration,
             "result": result,
-            # ✅ novo: já deixa explícito se conta para streak
             "counts_for_streak": bool(duration >= 10),
         }
 
@@ -826,7 +916,6 @@ def inserir_estudos_log(reg: Dict[str, Any]) -> None:
 # =================================================
 #          SAÚDE (PAINEL): PERFIL / REFEIÇÕES / HÁBITOS / ATIVIDADES
 # =================================================
-
 def saude_profile_path() -> str:
     return saude_path("profile")
 
@@ -838,7 +927,6 @@ def saude_habits_path() -> str:
 
 def saude_activity_path() -> str:
     return saude_path("activity_logs")
-
 
 # --------- PERFIL ----------
 def buscar_saude_profile() -> Dict[str, Any]:
@@ -852,7 +940,6 @@ def upsert_saude_profile(patch: Dict[str, Any]) -> None:
         out.update(patch)
         return out
     safe_update_json(saude_profile_path(), updater, commit_message="upsert saude profile")
-
 
 # --------- REFEIÇÕES ----------
 def buscar_meals() -> List[Dict[str, Any]]:
@@ -889,7 +976,6 @@ def deletar_meal(meal_id: int) -> None:
         return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(meal_id))]
     safe_update_json(saude_meals_path(), updater, commit_message=f"delete meal {meal_id}")
 
-
 # --------- HÁBITOS (1 registro por dia) ----------
 def buscar_habit_checks() -> List[Dict[str, Any]]:
     obj, _ = gh_get_file(saude_habits_path())
@@ -912,7 +998,6 @@ def upsert_habit_check(date_str: str, patch: Dict[str, Any]) -> None:
         return obj
 
     safe_update_json(saude_habits_path(), updater, commit_message=f"upsert habit_check {date_str}")
-
 
 # --------- ATIVIDADES (movimento simples) ----------
 def buscar_activity_logs() -> List[Dict[str, Any]]:
@@ -939,4 +1024,3 @@ def deletar_activity_log(log_id: int) -> None:
         obj = obj or []
         return [r for r in obj if not (isinstance(r, dict) and int(r.get("id", -1)) == int(log_id))]
     safe_update_json(saude_activity_path(), updater, commit_message=f"delete activity_log {log_id}")
-
