@@ -4,24 +4,27 @@ from __future__ import annotations
 
 import re
 import streamlit as st
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 from nlp_pt import parse_quick_entry
 from github_db import (
-    # tarefas/eventos
+    # Tarefas / Eventos
     buscar_tasks, inserir_task, atualizar_task,
 
-    # saúde (novo)
+    # Saúde
     buscar_agua_logs, inserir_agua,
     buscar_peso_logs, inserir_peso,
     buscar_activity_logs, buscar_workout_logs,
     buscar_saude_config,
 
-    # estudos
-    buscar_estudos_topics, buscar_estudos_subjects,
+    # Estudos
+    buscar_estudos_topics, buscar_estudos_subjects, buscar_estudos_logs,
+    inserir_estudos_log, atualizar_estudos_topic,
 )
 
-# ---------- utils ----------
+# =========================
+# Utils: datas/parse
+# =========================
 def _iso_to_dt(x: str | None):
     try:
         return datetime.fromisoformat(x) if x else None
@@ -29,20 +32,32 @@ def _iso_to_dt(x: str | None):
         return None
 
 def _iso_to_date(x: str | None):
+    # topics/weight/water usam date ISO (YYYY-MM-DD); tasks/events podem usar ISO datetime
+    if not x:
+        return None
     try:
-        return datetime.fromisoformat(x).date() if x else None
+        return date.fromisoformat(str(x))
     except Exception:
         try:
-            return date.fromisoformat(x) if x else None
+            return datetime.fromisoformat(str(x)).date()
         except Exception:
             return None
 
-def _today():
+def _today() -> date:
     return date.today()
 
+def _fmt_hhmm(dt: datetime | None) -> str:
+    return dt.strftime("%H:%M") if dt else "—"
+
+def _fmt_date_br(d: date | None) -> str:
+    return d.strftime("%d/%m") if d else "—"
+
+# =========================
+# Saúde: cálculos rápidos
+# =========================
 def _water_today_ml(water_logs: list[dict], hoje: date) -> float:
     total = 0.0
-    for r in water_logs or []:
+    for r in (water_logs or []):
         if str(r.get("date")) == hoje.isoformat():
             try:
                 total += float(r.get("amount_ml") or 0)
@@ -50,101 +65,275 @@ def _water_today_ml(water_logs: list[dict], hoje: date) -> float:
                 pass
     return float(total)
 
-def _last_activity(activity_logs: list[dict], workout_logs: list[dict]):
-    # pega o último registro (activity_logs tem date + minutes; workout_logs tem date + exercise)
+def _get_last_weight_kg(peso_logs: list[dict]) -> float | None:
     last = None
-    for r in activity_logs or []:
+    last_d = None
+    for r in (peso_logs or []):
         d = _iso_to_date(r.get("date"))
-        if d:
-            last = max(last, (d, f"{r.get('activity','')} ({r.get('minutes',0)} min)")) if last else (d, f"{r.get('activity','')} ({r.get('minutes',0)} min)")
-    for r in workout_logs or []:
+        if not d:
+            continue
+        try:
+            w = float(r.get("weight_kg"))
+        except Exception:
+            continue
+        if (last_d is None) or (d > last_d):
+            last_d, last = d, w
+    return last
+
+def _auto_water_goal_ml(cfg: dict, last_weight_kg: float | None) -> int:
+    # compatível com seu padrão: cfg["water_goal_ml"] override; senão peso*35ml (clamp 1500..4500) [1](https://amhpdfbr-my.sharepoint.com/personal/guilherme_cavalcante_amhp_com_br/_layouts/15/Doc.aspx?sourcedoc=%7B4D1D523C-7E73-439C-86B5-B6953EB36D0C%7D&file=C%C3%93DIGO.docx&action=default&mobileredirect=true)
+    if isinstance(cfg, dict) and cfg.get("water_goal_ml") not in (None, ""):
+        try:
+            return int(cfg.get("water_goal_ml"))
+        except Exception:
+            pass
+    if last_weight_kg and last_weight_kg > 0:
+        goal = int(round(last_weight_kg * 35))
+        goal = max(1500, min(4500, goal))
+        # arredonda para 50ml
+        goal = int(round(goal / 50.0) * 50)
+        return goal
+    return 2000
+
+def _last_activity_text(activity_logs: list[dict], workout_logs: list[dict]) -> str:
+    # activity_logs: date, activity, minutes; workout_logs: date, exercise 
+    best_dt = None
+    best_txt = None
+
+    for r in (activity_logs or []):
         d = _iso_to_date(r.get("date"))
-        if d:
-            last = max(last, (d, f"Treino: {r.get('exercise','')}")) if last else (d, f"Treino: {r.get('exercise','')}")
-    return last[1] if last else "—"
+        if not d:
+            continue
+        txt = f"{(r.get('activity') or '').strip()} ({int(r.get('minutes') or 0)} min)"
+        if best_dt is None or d > best_dt:
+            best_dt, best_txt = d, txt
 
-def _tasks_today(tasks: list[dict], hoje: date):
-    pend = []
-    atras = []
-    eventos = []
-    for t in tasks or []:
-        status = t.get("status")
-        ttype = t.get("type", "task")
+    for r in (workout_logs or []):
+        d = _iso_to_date(r.get("date"))
+        if not d:
+            continue
+        txt = f"Treino: {(r.get('exercise') or '').strip()}"
+        if best_dt is None or d > best_dt:
+            best_dt, best_txt = d, txt
 
-        if ttype == "event":
+    return best_txt or "—"
+
+# =========================
+# Tarefas/Eventos do dia
+# =========================
+def _task_day(t: dict) -> date | None:
+    if t.get("type") == "event":
+        dt = _iso_to_dt(t.get("start_at"))
+        return dt.date() if dt else None
+    return _iso_to_date(t.get("due_at"))
+
+def _is_overdue_task(t: dict, hoje: date) -> bool:
+    if t.get("type") == "event":
+        return False
+    if t.get("status") not in ("todo", "doing"):
+        return False
+    d = _task_day(t)
+    return bool(d and d < hoje)
+
+def _is_today_task(t: dict, hoje: date) -> bool:
+    if t.get("type") == "event":
+        return False
+    if t.get("status") not in ("todo", "doing"):
+        return False
+    d = _task_day(t)
+    return bool(d and d == hoje)
+
+def _events_today(tasks: list[dict], hoje: date) -> list[dict]:
+    ev = []
+    for t in (tasks or []):
+        if t.get("type") == "event":
             dt = _iso_to_dt(t.get("start_at"))
             if dt and dt.date() == hoje:
-                eventos.append(t)
-            continue
-
-        # task
-        d = _iso_to_date(t.get("due_at"))
-        if status in ("todo", "doing"):
-            if d and d < hoje:
-                atras.append(t)
-            elif d == hoje:
-                pend.append(t)
-            elif d is None:
-                # sem data não entra no HOJE (pode entrar num "Inbox" depois)
-                pass
-
-    # ordena eventos por hora
-    eventos.sort(key=lambda x: (_iso_to_dt(x.get("start_at")) or datetime.max))
-    # ordena tarefas: atrasadas primeiro
-    atras.sort(key=lambda x: (_iso_to_date(x.get("due_at")) or date.min))
-    pend.sort(key=lambda x: (x.get("priority") != "important", (x.get("title") or "").lower()))
-    return eventos, atras, pend
+                ev.append(t)
+    ev.sort(key=lambda x: (_iso_to_dt(x.get("start_at")) or datetime.max))
+    return ev
 
 def _done_today_count(tasks: list[dict], hoje: date) -> int:
     n = 0
-    for t in tasks or []:
-        if t.get("status") == "done":
-            dt = _iso_to_dt(t.get("completed_at")) or _iso_to_dt(t.get("updated_at"))
-            if dt and dt.date() == hoje:
-                n += 1
+    for t in (tasks or []):
+        if t.get("status") != "done":
+            continue
+        dt = _iso_to_dt(t.get("completed_at")) or _iso_to_dt(t.get("updated_at"))
+        if dt and dt.date() == hoje:
+            n += 1
     return n
 
-def _study_planned_today(topics: list[dict], hoje: date):
+# =========================
+# Estudos: planejado hoje + match subject+topic
+# =========================
+def _study_planned_today(topics: list[dict], hoje: date) -> list[dict]:
     wd = hoje.weekday()
     planned = []
-    for t in topics or []:
-        if not isinstance(t, dict) or not t.get("active", True):
+    for tp in (topics or []):
+        if not isinstance(tp, dict):
             continue
-        if str(t.get("status")) == "done":
+        if not tp.get("active", True):
             continue
-        if t.get("planned_date") == hoje.isoformat():
-            planned.append(t)
+        if str(tp.get("status")) == "done":
             continue
-        wds = t.get("planned_weekdays") or []
-        if isinstance(wds, list) and wd in wds:
-            planned.append(t)
-    planned.sort(key=lambda x: (x.get("subject_id", 9999), x.get("order", 9999)))
-    return planned[:5]
 
-# ---------- entrada universal ----------
-def _parse_universal(text: str):
-    s = (text or "").strip().lower()
+        if tp.get("planned_date") == hoje.isoformat():
+            planned.append(tp)
+            continue
+
+        wds = tp.get("planned_weekdays") or []
+        if isinstance(wds, list) and wd in wds:
+            planned.append(tp)
+
+    planned.sort(key=lambda x: (int(x.get("subject_id", 9999)), int(x.get("order", 9999))))
+    return planned
+
+def _tokens(txt: str) -> list[str]:
+    return [t for t in re.split(r"\W+", (txt or "").lower()) if t]
+
+def _score_match(query: str, subject_name: str, topic_title: str) -> int:
+    q = _tokens(query)
+    if not q:
+        return 0
+
+    subj = (subject_name or "").lower()
+    title = (topic_title or "").lower()
+    hay = (subj + " " + title).strip()
+
+    score = 0
+    if query.lower() in hay:
+        score += 6
+
+    subj_set = set(_tokens(subj))
+    title_set = set(_tokens(title))
+
+    for tok in q:
+        if tok in title_set:
+            score += 3
+        elif tok in subj_set:
+            score += 2
+
+    return score
+
+def _pick_topic_id_for_study(query: str, topics: list[dict], planned_today: list[dict], subj_map: dict[int, str]) -> int | None:
+    query = (query or "").strip()
+    if not query:
+        return int(planned_today[0]["id"]) if planned_today else None
+
+    best_sc = 0
+    best_id = None
+    for tp in (topics or []):
+        if not isinstance(tp, dict):
+            continue
+        if not tp.get("active", True):
+            continue
+        if str(tp.get("status")) == "done":
+            continue
+
+        try:
+            sid = int(tp.get("subject_id"))
+        except Exception:
+            sid = -1
+        subj_name = subj_map.get(sid, "")
+        title = tp.get("title") or ""
+
+        sc = _score_match(query, subj_name, title)
+        if sc > best_sc:
+            best_sc = sc
+            try:
+                best_id = int(tp.get("id"))
+            except Exception:
+                best_id = None
+
+    if best_id is None:
+        return None
+
+    # limiar contra match fraco
+    if best_sc < 5:
+        return None
+
+    return best_id
+
+def _extract_duration_min(s: str) -> int:
+    m = re.search(r"(\d{1,3})\s*(minutos|min|m)\b", (s or "").lower())
+    if m:
+        return max(0, int(m.group(1)))
+    m2 = re.search(r"\b(\d{1,3})\b", (s or "").lower())
+    if m2:
+        return max(0, int(m2.group(1)))
+    return 25
+
+def _extract_result(s: str) -> str:
+    t = (s or "").lower()
+    if "revis" in t or "review" in t:
+        return "review"
+    if "tudo" in t or "all" in t or "completo" in t or "complete" in t:
+        return "all"
+    return "partial"
+
+def _clean_study_text(s: str) -> str:
+    t = (s or "").lower()
+    t = re.sub(r"\b(estudo|estudar|study)\b", "", t).strip()
+    t = re.sub(r"\b\d{1,3}\s*(minutos|min|m)\b", "", t).strip()
+    t = re.sub(r"\b(revis(ao|ão)?|review|tudo|all|complete|completo)\b", "", t).strip()
+    return t.strip(" ,;.-")
+
+def _create_study_log(topic_id: int, duration_min: int, result: str = "partial"):
+    start = datetime.utcnow()
+    end = start + timedelta(minutes=max(0, int(duration_min)))
+
+    inserir_estudos_log({
+        "topic_id": int(topic_id),
+        "start_at": start.isoformat() + "Z",
+        "end_at": end.isoformat() + "Z",
+        "duration_min": int(duration_min),
+        "result": result,
+    })
+    # atualiza tópico: last_studied_at e status "doing" (leve)
+    atualizar_estudos_topic(int(topic_id), {
+        "last_studied_at": end.isoformat() + "Z",
+        "status": "doing"
+    })
+
+# =========================
+# Entrada universal: água / peso / estudo / tarefas-eventos
+# =========================
+def _parse_universal(text: str, topics: list[dict], planned_today: list[dict], subj_map: dict[int, str]):
+    s = (text or "").strip()
     if not s:
         return ("noop", None)
 
-    # água: "agua 500" / "água 600ml" / "water 300"
-    if s.startswith(("agua", "água", "water")):
-        m = re.search(r"(\d{2,4})", s)
+    low = s.lower()
+
+    # água: "agua 500" / "água 600ml"
+    if low.startswith(("agua", "água", "water")):
+        m = re.search(r"(\d{2,4})", low)
         ml = int(m.group(1)) if m else 250
         return ("water", {"amount_ml": ml})
 
     # peso: "peso 79.8" / "79,8kg"
-    if s.startswith("peso") or "kg" in s:
-        m = re.search(r"(\d{2,3}([.,]\d)?)", s)
+    if low.startswith("peso") or "kg" in low:
+        m = re.search(r"(\d{2,3}([.,]\d)?)", low)
         if m:
             val = float(m.group(1).replace(",", "."))
             return ("weight", {"weight_kg": val})
         return ("weight", None)
 
-    # fallback -> tarefas/eventos pelo NLP existente
-    payload = parse_quick_entry(text)
+    # estudo: "estudo 25min direito constitucional" / "estudar revisão 15m probabilidade"
+    if low.startswith(("estudo", "estudar", "study")):
+        dur = _extract_duration_min(low)
+        res = _extract_result(low)
+        q = _clean_study_text(s)
+        tid = _pick_topic_id_for_study(q, topics, planned_today, subj_map)
+        return ("study", {"topic_id": tid, "duration_min": dur, "result": res, "query": q})
+
+    # fallback -> NLP de tarefa/evento (já existente no app) [1](https://amhpdfbr-my.sharepoint.com/personal/guilherme_cavalcante_amhp_com_br/_layouts/15/Doc.aspx?sourcedoc=%7B4D1D523C-7E73-439C-86B5-B6953EB36D0C%7D&file=C%C3%93DIGO.docx&action=default&mobileredirect=true)
+    payload = parse_quick_entry(s)
     return ("task_or_event", payload)
 
+# =========================
+# Render HOJE
+# =========================
 def render_hoje():
     st.markdown("""
       <div class="header-container">
@@ -155,117 +344,271 @@ def render_hoje():
 
     hoje = _today()
 
-    # --- cache: puxa só se não existir ---
+    # ---------- cache em sessão (mesmo padrão das views existentes) [1](https://amhpdfbr-my.sharepoint.com/personal/guilherme_cavalcante_amhp_com_br/_layouts/15/Doc.aspx?sourcedoc=%7B4D1D523C-7E73-439C-86B5-B6953EB36D0C%7D&file=C%C3%93DIGO.docx&action=default&mobileredirect=true) ----------
     if "tasks" not in st.session_state:
         st.session_state.tasks = buscar_tasks()
+
     if "agua_logs" not in st.session_state:
         st.session_state.agua_logs = buscar_agua_logs()
+
     if "peso_logs" not in st.session_state:
         st.session_state.peso_logs = buscar_peso_logs()
+
     if "activity_logs" not in st.session_state:
         st.session_state.activity_logs = buscar_activity_logs()
+
     if "w_logs" not in st.session_state:
         st.session_state.w_logs = buscar_workout_logs()
+
     if "saude_cfg" not in st.session_state:
         st.session_state.saude_cfg = buscar_saude_config()
-    if "est_topics" not in st.session_state:
-        st.session_state.est_topics = buscar_estudos_topics()
+
     if "est_subjects" not in st.session_state:
         st.session_state.est_subjects = buscar_estudos_subjects()
 
-    # --- entrada única ---
+    if "est_topics" not in st.session_state:
+        st.session_state.est_topics = buscar_estudos_topics()
+
+    if "est_logs" not in st.session_state:
+        st.session_state.est_logs = buscar_estudos_logs()
+
+    # ---------- estudos: subj_map + planejados hoje ----------
+    subj_map = {
+        int(s.get("id")): (s.get("name") or "").strip()
+        for s in (st.session_state.est_subjects or [])
+        if isinstance(s, dict) and str(s.get("id", "")).isdigit()
+    }
+
+    planned = _study_planned_today(st.session_state.est_topics, hoje)
+
+    # ---------- Entrada única ----------
     st.text_input(
         "O que você quer registrar?",
-        placeholder="Ex: água 500 | peso 79.8 | Reunião amanhã 15h | Pagar boleto 12/02 #contas",
+        placeholder="Ex: água 500 | peso 79.8 | estudo 25min direito constitucional | Reunião amanhã 15h | Pagar boleto 12/02 #contas",
         key="hoje_quick"
     )
-    c1, c2 = st.columns([3, 1])
-    with c2:
+    cA, cB = st.columns([4, 1])
+    with cB:
         if st.button("Registrar", use_container_width=True):
-            kind, data = _parse_universal(st.session_state.get("hoje_quick"))
-            if kind == "water" and data:
+            kind, data = _parse_universal(
+                st.session_state.get("hoje_quick"),
+                st.session_state.est_topics,
+                planned,
+                subj_map
+            )
+
+            if kind == "water":
                 inserir_agua({"date": hoje.isoformat(), "amount_ml": int(data["amount_ml"])})
                 st.session_state.agua_logs = buscar_agua_logs()
                 st.toast(f"+{int(data['amount_ml'])} ml")
                 st.rerun()
 
-            elif kind == "weight" and data:
-                inserir_peso({"date": hoje.isoformat(), "weight_kg": float(data["weight_kg"])})
-                st.session_state.peso_logs = buscar_peso_logs()
-                st.toast("Peso registrado.")
+            elif kind == "weight":
+                if data and data.get("weight_kg") is not None:
+                    inserir_peso({"date": hoje.isoformat(), "weight_kg": float(data["weight_kg"])})
+                    st.session_state.peso_logs = buscar_peso_logs()
+                    st.toast("Peso registrado.")
+                    st.rerun()
+                else:
+                    st.warning("Não entendi o peso. Ex: 'peso 79.8'")
+
+            elif kind == "study":
+                if data.get("topic_id") is None:
+                    # fallback 1-toque
+                    st.session_state["_pending_study"] = data
+                    st.rerun()
+
+                _create_study_log(int(data["topic_id"]), int(data["duration_min"]), str(data["result"]))
+                st.session_state.est_logs = buscar_estudos_logs()
+                st.toast(f"📚 Estudo registrado: {int(data['duration_min'])} min")
                 st.rerun()
 
-            elif kind == "task_or_event" and data:
-                data.update({
+            elif kind == "task_or_event":
+                payload = dict(data or {})
+                payload.update({
                     "assignee": "Ambos",
                     "created_at": datetime.utcnow().isoformat() + "Z",
                     "updated_at": None
                 })
-                inserir_task(data)
+                inserir_task(payload)
                 st.session_state.tasks = buscar_tasks()
-                st.toast(f"✅ Adicionado: {data.get('title','')}")
+                st.toast(f"✅ Adicionado: {payload.get('title','')}")
+                st.rerun()
+
+    # ---------- fallback seletor de tópico (quando match falha) ----------
+    if st.session_state.get("_pending_study"):
+        pend = st.session_state["_pending_study"]
+        st.markdown("**Escolha o tópico (1 toque):**")
+
+        # planejados hoje primeiro, depois ativos
+        options = []
+        seen = set()
+        for tp in planned:
+            try:
+                tid = int(tp.get("id"))
+            except Exception:
+                continue
+            options.append(tp)
+            seen.add(tid)
+
+        for tp in (st.session_state.est_topics or []):
+            if not isinstance(tp, dict) or not tp.get("active", True) or str(tp.get("status")) == "done":
+                continue
+            try:
+                tid = int(tp.get("id"))
+            except Exception:
+                continue
+            if tid not in seen:
+                options.append(tp)
+                seen.add(tid)
+
+        def _label(tp: dict) -> str:
+            try:
+                sid = int(tp.get("subject_id"))
+            except Exception:
+                sid = -1
+            subj = subj_map.get(sid, "—")
+            return f"{int(tp.get('id'))} — {subj} — {tp.get('title','')}"
+
+        labels = [_label(tp) for tp in options] if options else []
+        if not labels:
+            st.warning("Você não tem tópicos ativos para registrar estudo.")
+            st.session_state["_pending_study"] = None
+        else:
+            sel = st.selectbox("Tópico", labels, index=0, key="study_topic_pick")
+            if st.button("Salvar estudo", key="study_pick_save"):
+                picked_id = int(sel.split("—")[0].strip())
+                _create_study_log(picked_id, int(pend["duration_min"]), str(pend["result"]))
+                st.session_state.est_logs = buscar_estudos_logs()
+                st.session_state["_pending_study"] = None
+                st.toast(f"📚 Estudo registrado: {int(pend['duration_min'])} min")
                 st.rerun()
 
     st.divider()
 
-    # --- métricas honestas ---
+    # ---------- Métricas honestas ----------
     done_today = _done_today_count(st.session_state.tasks, hoje)
     water_today = _water_today_ml(st.session_state.agua_logs, hoje)
-    last_act = _last_activity(st.session_state.activity_logs, st.session_state.w_logs)
+    last_w = _get_last_weight_kg(st.session_state.peso_logs)
+    water_goal = _auto_water_goal_ml(st.session_state.saude_cfg, last_w)
+    last_act = _last_activity_text(st.session_state.activity_logs, st.session_state.w_logs)
 
-    m1, m2, m3 = st.columns(3)
+    m1, m2, m3, m4 = st.columns(4)
     m1.metric("Feitas hoje", str(done_today))
-    m2.metric("Água hoje (ml)", str(int(water_today)))
-    m3.metric("Última atividade", last_act)
+    m2.metric("Água hoje", f"{int(water_today)} ml", delta=("Meta batida" if water_today >= water_goal else None))
+    m3.metric("Meta água", f"{int(water_goal)} ml")
+    m4.metric("Última atividade", last_act)
 
     st.divider()
 
-    # --- cards do HOJE ---
-    eventos, atrasadas, pendentes = _tasks_today(st.session_state.tasks, hoje)
-
+    # ---------- Seções do dia ----------
     # Eventos
     st.subheader("⏰ Eventos de hoje")
-    if not eventos:
+    ev = _events_today(st.session_state.tasks, hoje)
+    if not ev:
         st.caption("Sem eventos hoje.")
     else:
-        for e in eventos[:6]:
+        for e in ev[:8]:
             dt = _iso_to_dt(e.get("start_at"))
-            st.write(f"• **{dt.strftime('%H:%M') if dt else '—'}** — {e.get('title','')}")
+            st.write(f"• **{_fmt_hhmm(dt)}** — {e.get('title','')}")
 
-    # Tarefas atrasadas
-    st.subheader("🔴 Atrasadas")
-    if not atrasadas:
-        st.caption("Nada atrasado ✅")
+    # Tarefas atrasadas e de hoje
+    st.subheader("✅ Tarefas pendentes e atrasadas")
+    atrasadas = [t for t in (st.session_state.tasks or []) if _is_overdue_task(t, hoje)]
+    pendentes = [t for t in (st.session_state.tasks or []) if _is_today_task(t, hoje)]
+
+    if not atrasadas and not pendentes:
+        st.caption("Nada pendente por data hoje ✅")
     else:
-        for t in atrasadas[:6]:
-            st.write(f"• {t.get('title','')} — vence em {t.get('due_at')}")
-            if st.button("Finalizar", key=f"hoje_done_{t['id']}"):
-                atualizar_task(int(t["id"]), {"status": "done", "completed_at": datetime.utcnow().isoformat() + "Z"})
-                st.session_state.tasks = buscar_tasks()
-                st.toast("Concluída.")
-                st.rerun()
+        if atrasadas:
+            st.markdown("**🔴 Atrasadas**")
+            atrasadas.sort(key=lambda t: (_task_day(t) or date.min))
+            for t in atrasadas[:8]:
+                d = _task_day(t)
+                c1, c2 = st.columns([4, 1])
+                with c1:
+                    st.write(f"• {t.get('title','')} — vence em **{_fmt_date_br(d)}**")
+                with c2:
+                    if st.button("Finalizar", key=f"hoje_done_over_{t['id']}"):
+                        atualizar_task(int(t["id"]), {
+                            "status": "done",
+                            "completed_at": datetime.utcnow().isoformat() + "Z"
+                        })
+                        st.session_state.tasks = buscar_tasks()
+                        st.toast("Concluída.")
+                        st.rerun()
 
-    # Tarefas de hoje
-    st.subheader("✅ Pra hoje")
-    if not pendentes:
-        st.caption("Nada pendente pra hoje.")
-    else:
-        for t in pendentes[:10]:
-            st.write(f"• {t.get('title','')}")
-            if st.button("Finalizar", key=f"hoje_done_today_{t['id']}"):
-                atualizar_task(int(t["id"]), {"status": "done", "completed_at": datetime.utcnow().isoformat() + "Z"})
-                st.session_state.tasks = buscar_tasks()
-                st.toast("Concluída.")
-                st.rerun()
+        if pendentes:
+            st.markdown("**🟡 Para hoje**")
+            pendentes.sort(key=lambda t: (t.get("priority") != "important", (t.get("title") or "").lower()))
+            for t in pendentes[:12]:
+                c1, c2 = st.columns([4, 1])
+                with c1:
+                    star = "⭐ " if t.get("priority") == "important" else ""
+                    st.write(f"• {star}{t.get('title','')}")
+                with c2:
+                    if st.button("Finalizar", key=f"hoje_done_today_{t['id']}"):
+                        atualizar_task(int(t["id"]), {
+                            "status": "done",
+                            "completed_at": datetime.utcnow().isoformat() + "Z"
+                        })
+                        st.session_state.tasks = buscar_tasks()
+                        st.toast("Concluída.")
+                        st.rerun()
 
-    # Estudos planejados
-    st.subheader("📚 Estudo de hoje")
-    planned = _study_planned_today(st.session_state.est_topics, hoje)
+    st.divider()
+
+    # Água (quick actions)
+    st.subheader("💧 Água do dia")
+    prog = min(water_today / max(1, water_goal), 1.0)
+    st.progress(prog)
+    st.caption(f"{int(water_today)} / {int(water_goal)} ml")
+
+    a1, a2, a3 = st.columns(3)
+    if a1.button("+250 ml", key="hoje_water_250"):
+        inserir_agua({"date": hoje.isoformat(), "amount_ml": 250})
+        st.session_state.agua_logs = buscar_agua_logs()
+        st.toast("+250 ml")
+        st.rerun()
+    if a2.button("+500 ml", key="hoje_water_500"):
+        inserir_agua({"date": hoje.isoformat(), "amount_ml": 500})
+        st.session_state.agua_logs = buscar_agua_logs()
+        st.toast("+500 ml")
+        st.rerun()
+    if a3.button("+600 ml", key="hoje_water_600"):
+        inserir_agua({"date": hoje.isoformat(), "amount_ml": 600})
+        st.session_state.agua_logs = buscar_agua_logs()
+        st.toast("+600 ml")
+        st.rerun()
+
+    st.divider()
+
+    # Estudos planejados hoje
+    st.subheader("📚 Estudo planejado hoje")
     if not planned:
         st.caption("Nada planejado hoje.")
     else:
-        # monta mapa subject_id -> nome
-        subj_map = {int(s.get("id")): s.get("name") for s in (st.session_state.est_subjects or []) if isinstance(s, dict) and str(s.get("id","")).isdigit()}
-        for t in planned:
-            subj = subj_map.get(int(t.get("subject_id", -1)), "—")
-            st.write(f"• **{subj}** — {t.get('title','')}")
+        for tp in planned[:6]:
+            try:
+                sid = int(tp.get("subject_id"))
+            except Exception:
+                sid = -1
+            subj = subj_map.get(sid, "—")
+            title = tp.get("title", "")
+            tid = int(tp.get("id"))
+
+            c1, c2, c3 = st.columns([4, 1, 1])
+            with c1:
+                st.write(f"• **{subj}** — {title}")
+            with c2:
+                if st.button("+25min", key=f"hoje_study_25_{tid}"):
+                    _create_study_log(tid, 25, "partial")
+                    st.session_state.est_logs = buscar_estudos_logs()
+                    st.toast("📚 +25min registrados.")
+                    st.rerun()
+            with c3:
+                if st.button("Revisão 15m", key=f"hoje_study_rev_{tid}"):
+                    _create_study_log(tid, 15, "review")
+                    st.session_state.est_logs = buscar_estudos_logs()
+                    st.toast("📚 Revisão registrada.")
+                    st.rerun()
