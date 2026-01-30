@@ -163,49 +163,41 @@ def render_tarefas():
     # ==========================
     st.markdown("#### ✍️ Adicionar")
 
-    def _add_quick_from_text(txt: str):
-        """Insere 1 tarefa/evento com debounce + evita duplo envio."""
-        txt = (txt or "").strip()
-        if not txt:
-            return
+def _add_quick_from_text(txt: str):
+    txt = (txt or "").strip()
+    if not txt:
+        return
 
-        # Debounce: evita inserir 2x o mesmo texto num intervalo curto
-        now_ts = time.time()
-        if txt == st.session_state.get("_last_add_text") and (now_ts - st.session_state.get("_last_add_ts", 0.0)) < 1.2:
-            return
+    now_ts = time.time()
+    if txt == st.session_state.get("_last_add_text") and (now_ts - st.session_state.get("_last_add_ts", 0.0)) < 1.5:
+        return
 
-        if st.session_state.get("_busy_add"):
-            return
+    if st.session_state.get("_busy_add"):
+        return
 
-        st.session_state["_busy_add"] = True
-        try:
-            payload = parse_quick_entry(txt)
-            payload.update({
-                "assignee": "Ambos",
-                "created_at": datetime.utcnow().isoformat() + "Z"
-            })            
-            
-            ok = inserir_task(payload)
-            if ok:
-                st.toast("Adicionado!")
-                st.session_state["_clear_quick"] = True
-                st.session_state.tasks = buscar_tasks()
-            else:
-                st.error("Não consegui salvar agora (concorrência/sincronização). Tente novamente em 2s.")
+    st.session_state["_busy_add"] = True
+    try:
+        payload = parse_quick_entry(txt)
+        payload.update({
+            "assignee": "Ambos",
+            "created_at": datetime.utcnow().isoformat() + "Z"
+        })
 
+        ok = inserir_task(payload)
 
-
-            # marca última inserção para debounce
+        if ok:
             st.session_state["_last_add_text"] = txt
             st.session_state["_last_add_ts"] = now_ts
-
-            st.toast("Adicionado!")
-            st.session_state["_clear_quick"] = True  # limpar no próximo rerun
+            st.session_state["_clear_quick"] = True
             st.session_state.tasks = buscar_tasks()
-        finally:
-            st.session_state["_busy_add"] = False
-
-        st.rerun()
+            st.toast(f"✅ Adicionado: {payload.get('title')}")
+            st.rerun()
+        else:
+            st.error("Não consegui salvar agora (concorrência/sincronização). Tente novamente em 2s.")
+    except Exception as e:
+        st.error(f"Erro no processamento: {e}")
+    finally:
+        st.session_state["_busy_add"] = False
 
     def _on_enter_add():
         # callback: pode ler e usar o valor do widget
