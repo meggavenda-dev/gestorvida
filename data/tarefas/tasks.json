@@ -101,19 +101,5 @@
     "type": "task",
     "created_at": "2026-01-30T11:32:13.009404Z",
     "id": 11
-  },
-  {
-    "title": "Geap - Retaguarda - Organizar processos para digitação",
-    "description": "",
-    "assignee": "Ambos",
-    "status": "todo",
-    "priority": "normal",
-    "tags": [],
-    "recurrence": null,
-    "due_at": null,
-    "start_at": null,
-    "type": "task",
-    "created_at": "2026-01-30T11:32:12.139656Z",
-    "id": 12
   }
 ]
