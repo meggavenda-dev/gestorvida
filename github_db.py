@@ -313,22 +313,43 @@ def buscar_tasks() -> List[Dict[str, Any]]:
             out.append(_normalize_task_row(r))
     return out
 
-def inserir_task(reg: Dict[str, Any]) -> None:
+def inserir_task(reg: Dict[str, Any]) -> bool:
+    """
+    Insere uma tarefa e retorna True se gravou no GitHub, False caso contrário.
+    Evita falhas por id inválido em registros antigos.
+    """
     def updater(obj):
-        obj = obj or []
-        new_id = (max([int(r.get("id", 0)) for r in obj if isinstance(r, dict)]) + 1) if obj else 1
+        # garante lista
+        obj = obj if isinstance(obj, list) else []
+
+        # calcula new_id de forma robusta
+        ids = []
+        for r in obj:
+            if not isinstance(r, dict):
+                continue
+            try:
+                ids.append(int(r.get("id") or 0))
+            except Exception:
+                # ignora ids inválidos (None, '', 'abc')
+                pass
+
+        new_id = (max(ids) + 1) if ids else 1
+
         reg2 = dict(reg)
-        reg2['id'] = new_id
-        reg2.setdefault('status', 'todo')
-        reg2.setdefault('assignee', 'Ambos')
-        reg2.setdefault('type', 'task')
-        reg2.setdefault('priority', 'normal')
-        reg2.setdefault('tags', [])
-        reg2.setdefault('recurrence', None)
-        reg2.setdefault('reminders', [])
+        reg2["id"] = new_id
+        reg2.setdefault("status", "todo")
+        reg2.setdefault("assignee", "Ambos")
+        reg2.setdefault("type", "task")
+        reg2.setdefault("priority", "normal")
+        reg2.setdefault("tags", [])
+        reg2.setdefault("recurrence", None)
+        reg2.setdefault("reminders", [])
+
         obj.append(reg2)
         return obj
-    safe_update_json(tasks_path("tasks"), updater, commit_message="add task")
+
+    new_obj, new_sha = safe_update_json(tasks_path("tasks"), updater, commit_message="add task")
+    return bool(new_sha)
 
 def atualizar_task(task_id: int, patch: Dict[str, Any]) -> None:
     def updater(obj):
