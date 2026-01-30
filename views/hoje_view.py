@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 import streamlit as st
 from datetime import datetime, date, timedelta
 
@@ -21,6 +22,66 @@ from github_db import (
     buscar_estudos_topics, buscar_estudos_subjects, buscar_estudos_logs,
     inserir_estudos_log, atualizar_estudos_topic,
 )
+
+# ============================================================
+# 0) TOLERÂNCIA A ERROS (normalização + aliases + correções)
+# ============================================================
+INTENT_ALIASES = {
+    "water": {"agua", "agu", "aguas", "h2o", "water"},
+    "weight": {"peso", "kg"},
+    "study": {"estudo", "estudar", "study"},
+}
+
+COMMON_CORRECTIONS = {
+    # água
+    "aguaa": "agua",
+    "aguac": "agua",
+    "aguae": "agua",
+    "aguá": "agua",      # caso venha com acento
+    "agaua": "agua",
+    "h20": "h2o",
+    # peso
+    "pseo": "peso",
+    "peos": "peso",
+    "psso": "peso",
+    # estudo
+    "estduo": "estudo",
+    "estdo": "estudo",
+    "estdu": "estudo",
+}
+
+def _strip_accents(s: str) -> str:
+    s = unicodedata.normalize("NFD", s)
+    return "".join(c for c in s if unicodedata.category(c) != "Mn")
+
+def _normalize_text(s: str) -> str:
+    s = (s or "").strip()
+    s = _strip_accents(s)
+    s = s.lower()
+    s = re.sub(r"\s+", " ", s)
+    return s
+
+def _apply_common_corrections(norm: str) -> str:
+    out = norm
+    for wrong, right in COMMON_CORRECTIONS.items():
+        out = out.replace(wrong, right)
+    return out
+
+def _match_intent(norm: str) -> str | None:
+    """
+    Decide intenção por aliases tolerantes.
+    - olha prefixo e tokens
+    """
+    tokens = set(re.split(r"\W+", norm))
+    tokens.discard("")
+    for intent, aliases in INTENT_ALIASES.items():
+        # prefixo
+        if any(norm.startswith(a) for a in aliases):
+            return intent
+        # token
+        if any(a in tokens for a in aliases):
+            return intent
+    return None
 
 # =========================
 # Utils: datas/parse
@@ -81,7 +142,7 @@ def _get_last_weight_kg(peso_logs: list[dict]) -> float | None:
     return last
 
 def _auto_water_goal_ml(cfg: dict, last_weight_kg: float | None) -> int:
-    # compatível com seu padrão: cfg["water_goal_ml"] override; senão peso*35ml (clamp 1500..4500) [1](https://amhpdfbr-my.sharepoint.com/personal/guilherme_cavalcante_amhp_com_br/_layouts/15/Doc.aspx?sourcedoc=%7B4D1D523C-7E73-439C-86B5-B6953EB36D0C%7D&file=C%C3%93DIGO.docx&action=default&mobileredirect=true)
+    # compatível com seu padrão: cfg["water_goal_ml"] override; senão peso*35ml (clamp 1500..4500)
     if isinstance(cfg, dict) and cfg.get("water_goal_ml") not in (None, ""):
         try:
             return int(cfg.get("water_goal_ml"))
@@ -96,7 +157,7 @@ def _auto_water_goal_ml(cfg: dict, last_weight_kg: float | None) -> int:
     return 2000
 
 def _last_activity_text(activity_logs: list[dict], workout_logs: list[dict]) -> str:
-    # activity_logs: date, activity, minutes; workout_logs: date, exercise 
+    # activity_logs: date, activity, minutes; workout_logs: date, exercise
     best_dt = None
     best_txt = None
 
@@ -296,39 +357,43 @@ def _create_study_log(topic_id: int, duration_min: int, result: str = "partial")
     })
 
 # =========================
-# Entrada universal: água / peso / estudo / tarefas-eventos
+# Entrada universal (tolerante): água / peso / estudo / tarefas-eventos
 # =========================
 def _parse_universal(text: str, topics: list[dict], planned_today: list[dict], subj_map: dict[int, str]):
-    s = (text or "").strip()
-    if not s:
+    raw = (text or "").strip()
+    if not raw:
         return ("noop", None)
 
-    low = s.lower()
+    # normaliza/tolera erros
+    norm = _normalize_text(raw)
+    norm = _apply_common_corrections(norm)
 
-    # água: "agua 500" / "água 600ml"
-    if low.startswith(("agua", "água", "water")):
-        m = re.search(r"(\d{2,4})", low)
+    intent = _match_intent(norm)
+
+    # água
+    if intent == "water":
+        m = re.search(r"(\d{2,4})", norm)
         ml = int(m.group(1)) if m else 250
         return ("water", {"amount_ml": ml})
 
-    # peso: "peso 79.8" / "79,8kg"
-    if low.startswith("peso") or "kg" in low:
-        m = re.search(r"(\d{2,3}([.,]\d)?)", low)
+    # peso
+    if intent == "weight":
+        m = re.search(r"(\d{2,3}([.,]\d)?)", norm)
         if m:
             val = float(m.group(1).replace(",", "."))
             return ("weight", {"weight_kg": val})
         return ("weight", None)
 
-    # estudo: "estudo 25min direito constitucional" / "estudar revisão 15m probabilidade"
-    if low.startswith(("estudo", "estudar", "study")):
-        dur = _extract_duration_min(low)
-        res = _extract_result(low)
-        q = _clean_study_text(s)
+    # estudo
+    if intent == "study":
+        dur = _extract_duration_min(norm)
+        res = _extract_result(norm)
+        q = _clean_study_text(raw)  # usa o RAW para manter nomes (melhor)
         tid = _pick_topic_id_for_study(q, topics, planned_today, subj_map)
         return ("study", {"topic_id": tid, "duration_min": dur, "result": res, "query": q})
 
-    # fallback -> NLP de tarefa/evento (já existente no app) [1](https://amhpdfbr-my.sharepoint.com/personal/guilherme_cavalcante_amhp_com_br/_layouts/15/Doc.aspx?sourcedoc=%7B4D1D523C-7E73-439C-86B5-B6953EB36D0C%7D&file=C%C3%93DIGO.docx&action=default&mobileredirect=true)
-    payload = parse_quick_entry(s)
+    # fallback -> NLP de tarefa/evento (usa RAW para o NLP ficar mais forte)
+    payload = parse_quick_entry(raw)
     return ("task_or_event", payload)
 
 # =========================
@@ -344,7 +409,7 @@ def render_hoje():
 
     hoje = _today()
 
-    # ---------- cache em sessão (mesmo padrão das views existentes) [1](https://amhpdfbr-my.sharepoint.com/personal/guilherme_cavalcante_amhp_com_br/_layouts/15/Doc.aspx?sourcedoc=%7B4D1D523C-7E73-439C-86B5-B6953EB36D0C%7D&file=C%C3%93DIGO.docx&action=default&mobileredirect=true) ----------
+    # ---------- cache em sessão ----------
     if "tasks" not in st.session_state:
         st.session_state.tasks = buscar_tasks()
 
@@ -384,7 +449,7 @@ def render_hoje():
     # ---------- Entrada única ----------
     st.text_input(
         "O que você quer registrar?",
-        placeholder="Ex: água 500 | peso 79.8 | estudo 25min direito constitucional | Reunião amanhã 15h | Pagar boleto 12/02 #contas",
+        placeholder="Ex: aguá 500 | pseo 79.8 | estudo 25min direito constitucional | Reunião amanhã 15h | Pagar boleto 12/02 #contas",
         key="hoje_quick"
     )
     cA, cB = st.columns([4, 1])
@@ -402,6 +467,7 @@ def render_hoje():
                 st.session_state.agua_logs = buscar_agua_logs()
                 st.toast(f"+{int(data['amount_ml'])} ml")
                 st.rerun()
+                return
 
             elif kind == "weight":
                 if data and data.get("weight_kg") is not None:
@@ -409,6 +475,7 @@ def render_hoje():
                     st.session_state.peso_logs = buscar_peso_logs()
                     st.toast("Peso registrado.")
                     st.rerun()
+                    return
                 else:
                     st.warning("Não entendi o peso. Ex: 'peso 79.8'")
 
@@ -417,11 +484,13 @@ def render_hoje():
                     # fallback 1-toque
                     st.session_state["_pending_study"] = data
                     st.rerun()
+                    return
 
                 _create_study_log(int(data["topic_id"]), int(data["duration_min"]), str(data["result"]))
                 st.session_state.est_logs = buscar_estudos_logs()
                 st.toast(f"📚 Estudo registrado: {int(data['duration_min'])} min")
                 st.rerun()
+                return
 
             elif kind == "task_or_event":
                 payload = dict(data or {})
@@ -434,6 +503,7 @@ def render_hoje():
                 st.session_state.tasks = buscar_tasks()
                 st.toast(f"✅ Adicionado: {payload.get('title','')}")
                 st.rerun()
+                return
 
     # ---------- fallback seletor de tópico (quando match falha) ----------
     if st.session_state.get("_pending_study"):
@@ -443,6 +513,7 @@ def render_hoje():
         # planejados hoje primeiro, depois ativos
         options = []
         seen = set()
+
         for tp in planned:
             try:
                 tid = int(tp.get("id"))
@@ -483,6 +554,7 @@ def render_hoje():
                 st.session_state["_pending_study"] = None
                 st.toast(f"📚 Estudo registrado: {int(pend['duration_min'])} min")
                 st.rerun()
+                return
 
     st.divider()
 
@@ -537,6 +609,7 @@ def render_hoje():
                         st.session_state.tasks = buscar_tasks()
                         st.toast("Concluída.")
                         st.rerun()
+                        return
 
         if pendentes:
             st.markdown("**🟡 Para hoje**")
@@ -555,6 +628,7 @@ def render_hoje():
                         st.session_state.tasks = buscar_tasks()
                         st.toast("Concluída.")
                         st.rerun()
+                        return
 
     st.divider()
 
@@ -570,16 +644,19 @@ def render_hoje():
         st.session_state.agua_logs = buscar_agua_logs()
         st.toast("+250 ml")
         st.rerun()
+        return
     if a2.button("+500 ml", key="hoje_water_500"):
         inserir_agua({"date": hoje.isoformat(), "amount_ml": 500})
         st.session_state.agua_logs = buscar_agua_logs()
         st.toast("+500 ml")
         st.rerun()
+        return
     if a3.button("+600 ml", key="hoje_water_600"):
         inserir_agua({"date": hoje.isoformat(), "amount_ml": 600})
         st.session_state.agua_logs = buscar_agua_logs()
         st.toast("+600 ml")
         st.rerun()
+        return
 
     st.divider()
 
@@ -606,9 +683,11 @@ def render_hoje():
                     st.session_state.est_logs = buscar_estudos_logs()
                     st.toast("📚 +25min registrados.")
                     st.rerun()
+                    return
             with c3:
                 if st.button("Revisão 15m", key=f"hoje_study_rev_{tid}"):
                     _create_study_log(tid, 15, "review")
                     st.session_state.est_logs = buscar_estudos_logs()
                     st.toast("📚 Revisão registrada.")
                     st.rerun()
+                    return
