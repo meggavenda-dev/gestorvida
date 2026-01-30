@@ -1,9 +1,11 @@
 # gestor_da_vida_app.py
 # -*- coding: utf-8 -*-
+
 import streamlit as st
 import streamlit.components.v1 as components
 
 # Importa os módulos de cada aba
+from views.hoje_view import render_hoje  # ✅ NOVO
 from views.financeiro_view import render_financeiro
 from views.tarefas_view import render_tarefas
 from views.saude_view import render_saude
@@ -34,15 +36,19 @@ def inject_head_for_ios():
           head.appendChild(el);
         }
         add('link', { rel:'manifest', href:'./manifest.json' });
+
         // Viewport ideal para iOS (safe-area)
         [...head.querySelectorAll('meta[name="viewport"]')].forEach(m => m.remove());
         add('meta', { name:'viewport', content:'width=device-width, initial-scale=1, viewport-fit=cover, shrink-to-fit=no' });
+
         // PWA light no iOS
         add('meta', { name:'apple-mobile-web-app-capable', content:'yes' });
         add('meta', { name:'apple-mobile-web-app-status-bar-style', content:'black-translucent' });
         add('meta', { name:'apple-mobile-web-app-title', content:'Gestor da Vida' });
+
         // Evita autolink de telefone
         add('meta', { name:'format-detection', content:'telephone=no' });
+
         // Ícone simples (ajuste para o seu)
         const icon = 'https://raw.githubusercontent.com/twitter/twemoji/master/assets/72x72/1f9d1-200d-2696-fe0f.png';
         add('link', { rel:'icon', type:'image/png', href: icon });
@@ -106,7 +112,9 @@ input, select, textarea,
   flex:1 1 auto; text-align:center; background:transparent; border-radius:12px;
   padding:12px 6px !important; color: var(--muted); font-size:14px; font-weight:800; border:none !important;
 }
-.stTabs [aria-selected="true"]{ background: var(--card) !important; color: var(--brand) !important; box-shadow: 0 1px 4px rgba(0,0,0,.06); border:1px solid var(--line); }
+.stTabs [aria-selected="true"]{
+  background: var(--card) !important; color: var(--brand) !important; box-shadow: 0 1px 4px rgba(0,0,0,.06); border:1px solid var(--line);
+}
 
 /* Métricas */
 [data-testid="stMetric"]{
@@ -144,49 +152,27 @@ input, select, textarea,
   background: var(--card); padding: 12px; border-radius: 14px; margin-bottom: 10px;
   border:1px solid var(--line); box-shadow: 0 1px 6px rgba(0,0,0,.05); color: var(--text);
 }
-.transaction-left, .task-left, .habit-left{ display:flex; align-items:flex-start; gap:12px; min-width:0; }
-.card-icon, .task-icon, .habit-icon{
-  background: #EBF1FA; width: 44px; height: 44px; border-radius: 10px; display:flex; align-items:center; justify-content:center; font-size: 20px; color:#0F172A; flex:0 0 44px;
-}
-.tc-info, .tk-info, .hb-info{ display:flex; flex-direction:column; gap:4px; min-width:0; }
-.tc-title, .tk-title, .hb-title{ font-weight: 800; color: #0A1628; line-height: 1.15; word-break: break-word; }
-.tc-meta, .tk-meta, .hb-meta{ font-size: 12px; color: #475569; line-height: 1.1; }
-
-/* Badges */
-.status-badge{
-  font-size: 11px; padding: 3px 8px; border-radius: 10px; font-weight: 900; text-transform: uppercase; display:inline-block; letter-spacing:.2px; width: fit-content;
-}
-.status-badge.pago{ background:#DCFCE7; color:#065F46; border:1px solid #86EFAC; }
-.status-badge.pendente{ background:#FEF3C7; color:#92400E; border:1px solid #FCD34D; }
-.status-badge.negociacao{ background:#DBEAFE; color:#1E3A8A; border:1px solid #93C5FD; }
-.status-badge.todo{ background:#FEF3C7; color:#92400E; border:1px solid #FCD34D; }
-.status-badge.doing{ background:#DBEAFE; color:#1E3A8A; border:1px solid #93C5FD; }
-.status-badge.done{ background:#DCFCE7; color:#065F46; border:1px solid #86EFAC; }
-.status-badge.cancelled{ background:#FEE2E2; color:#991B1B; border:1px solid #FCA5A5; }
-
-.transaction-right{ font-weight: 900; white-space: nowrap; margin-left:auto; }
-.transaction-right.entrada{ color:#059669; }
-.transaction-right.saida{ color:#DC2626; }
-.vencimento-alerta { color: #B91C1C; font-size: 12px; font-weight: 800; }
-
-.reserva-card{ background: linear-gradient(135deg, #F8FAFF 0%, #E9EEF7 100%); color: #0A1628; padding: 18px; border-radius: 14px; text-align: center; box-shadow: 0 1px 8px rgba(0,0,0,.06); border:1px solid var(--line); }
-.meta-container{ background:#F6F9FC; border:1px solid var(--line); border-radius:10px; padding:10px; margin-bottom:8px; color:#0A1628; font-weight:600; }
 
 /* Responsivo */
 @media (max-width: 480px){
   [data-testid="column"]{ width:100% !important; flex:1 1 100% !important; }
   .main-title{ font-size:1.65rem; }
 }
+
 #MainMenu, footer, header{ visibility: hidden; }
 .block-container{ padding-top: 0.9rem !important; }
 
 /* Dark Mode */
 @media (prefers-color-scheme: dark){
-  :root{ --bg:#0F172A; --text:#E7EEF8; --muted:#C8D4EE; --card:#141C2F; --line:#24324A; --soft-line:#1F2A3E; --brand:#7AA7FF; --brand-600:#5E90FF; --ok:#34D399; --warn:#FBBF24; --danger:#F87171; }
+  :root{
+    --bg:#0F172A; --text:#E7EEF8; --muted:#C8D4EE;
+    --card:#141C2F; --line:#24324A; --soft-line:#1F2A3E;
+    --brand:#7AA7FF; --brand-600:#5E90FF;
+    --ok:#34D399; --warn:#FBBF24; --danger:#F87171;
+  }
   html, body { background: var(--bg); color: var(--text); }
   .stApp, .block-container { background: var(--bg); }
   .transaction-card, .task-card, .habit-card, .card{ background: var(--card); border-color:#2A3952; box-shadow: 0 1px 10px rgba(0,0,0,.32); }
-  .card-icon, .task-icon, .habit-icon{ background:#223049; color:#E5E7EB; }
   .slogan{ color:#B8C3D9; }
   ::placeholder{ color:#A8B5CC !important; }
 }
@@ -213,7 +199,6 @@ def login():
 
 if 'logged_in' not in st.session_state:
     st.session_state.logged_in = False
-
 if not st.session_state.logged_in:
     login()
     st.stop()
@@ -236,18 +221,17 @@ st.markdown("""
 # ============================
 # ABAS PRINCIPAIS
 # ============================
-aba_fin, aba_tar, aba_sau, aba_est = st.tabs(
-    ["💰 Financeiro", "🗓️ Tarefas", "💪 Saúde", "📚 Estudos"]
+aba_hoje, aba_fin, aba_tar, aba_sau, aba_est = st.tabs(
+    ["🏠 Hoje", "💰 Financeiro", "🗓️ Tarefas", "💪 Saúde", "📚 Estudos"]
 )
 
+with aba_hoje:
+    render_hoje()
 with aba_fin:
-    render_financeiro()   # chama módulo Financeiro
-
+    render_financeiro()
 with aba_tar:
-    render_tarefas()      # chama módulo Tarefas
-
+    render_tarefas()
 with aba_sau:
-    render_saude()        # chama módulo Saúde
-
+    render_saude()
 with aba_est:
-    render_estudos()      # chama módulo Estudos
+    render_estudos()
