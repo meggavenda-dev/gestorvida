@@ -183,8 +183,17 @@ def render_tarefas():
             payload.update({
                 "assignee": "Ambos",
                 "created_at": datetime.utcnow().isoformat() + "Z"
-            })
-            inserir_task(payload)
+            })            
+            
+            ok = inserir_task(payload)
+            if ok:
+                st.toast("Adicionado!")
+                st.session_state["_clear_quick"] = True
+                st.session_state.tasks = buscar_tasks()
+            else:
+                st.error("Não consegui salvar agora (concorrência/sincronização). Tente novamente em 2s.")
+
+
 
             # marca última inserção para debounce
             st.session_state["_last_add_text"] = txt
