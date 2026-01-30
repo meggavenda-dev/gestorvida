@@ -1,6 +1,8 @@
 # views/tarefas_view.py
 # -*- coding: utf-8 -*-
 from __future__ import annotations
+
+import time
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
@@ -19,17 +21,20 @@ STATUS_LABELS = {
     "cancelled": "Cancelado"
 }
 
+
 def _iso_to_date(x):
     try:
         return datetime.fromisoformat(x).date() if x else None
     except Exception:
         return None
 
+
 def _iso_to_dt(x):
     try:
         return datetime.fromisoformat(x) if x else None
     except Exception:
         return None
+
 
 def _group_for_agenda(tasks):
     agenda = {}
@@ -42,6 +47,7 @@ def _group_for_agenda(tasks):
             d = _iso_to_date(t.get("due_at"))
         agenda.setdefault(d, []).append(t)
     return agenda
+
 
 def _progress_of_today(tasks):
     today = date.today()
@@ -62,12 +68,14 @@ def _progress_of_today(tasks):
                     done += 1
     return done, total
 
+
 def _next_from_recurrence(t: dict):
     rec = t.get("recurrence")
     if not rec:
         return None
     freq = rec.get("freq")
     interval = int(rec.get("interval", 1) or 1)
+
     if t.get("type") == "event":
         s = _iso_to_dt(t.get("start_at"))
         if not s:
@@ -77,7 +85,7 @@ def _next_from_recurrence(t: dict):
         if freq == "weekly":
             return s + timedelta(weeks=interval)
         if freq == "monthly":
-            return s + timedelta(days=30*interval)  # simplificação
+            return s + timedelta(days=30 * interval)  # simplificação
     else:
         d = _iso_to_date(t.get("due_at"))
         if not d:
@@ -87,8 +95,10 @@ def _next_from_recurrence(t: dict):
         if freq == "weekly":
             return d + timedelta(weeks=interval)
         if freq == "monthly":
-            return d + timedelta(days=30*interval)  # simplificação
+            return d + timedelta(days=30 * interval)  # simplificação
+
     return None
+
 
 def _inject_notifications():
     components.html(
@@ -111,6 +121,7 @@ def _inject_notifications():
         height=0
     )
 
+
 def render_tarefas():
     st.markdown(
         """
@@ -122,54 +133,97 @@ def render_tarefas():
         unsafe_allow_html=True
     )
 
-    if 'tasks' not in st.session_state:
+    # ==========================
+    # Bootstrap estado
+    # ==========================
+    if "tasks" not in st.session_state:
         st.session_state.tasks = buscar_tasks()
-    if 'pessoas' not in st.session_state or not st.session_state.pessoas:
+
+    if "pessoas" not in st.session_state or not st.session_state.pessoas:
         st.session_state.pessoas = buscar_pessoas()
+
+    # Flags de controle da entrada rápida
+    st.session_state.setdefault("_clear_quick", False)
+    st.session_state.setdefault("_busy_add", False)
+    st.session_state.setdefault("_last_add_text", "")
+    st.session_state.setdefault("_last_add_ts", 0.0)
+
+    # Limpa o input ANTES de criar o widget (evita StreamlitAPIException)
+    if st.session_state.get("_clear_quick"):
+        st.session_state["quick_in"] = ""
+        st.session_state["_clear_quick"] = False
 
     tasks = st.session_state.tasks
 
     # ======= Notificações Web (in-app) opcional =======
     _inject_notifications()
 
-    # ======= Entrada rápida =======
+    # ==========================
+    # Entrada rápida (1 toque)
+    # ==========================
     st.markdown("#### ✍️ Adicionar")
 
-    def _on_enter_add():
-        st.session_state['_do_add_quick'] = True
+    def _add_quick_from_text(txt: str):
+        """Insere 1 tarefa/evento com debounce + evita duplo envio."""
+        txt = (txt or "").strip()
+        if not txt:
+            return
 
-    cqi1, cqi2 = st.columns([4,1])
-    with cqi1:
-        st.text_input(
-            "Digite e pressione Enter",
-            placeholder="Ex.: Reunião amanhã 15h / Pagar boleto 12/02",
-            label_visibility="collapsed",
-            key="quick_in",
-            on_change=_on_enter_add
-        )
-    with cqi2:
-        add_now = st.button("➕", use_container_width=True)
+        # Debounce: evita inserir 2x o mesmo texto num intervalo curto
+        now_ts = time.time()
+        if txt == st.session_state.get("_last_add_text") and (now_ts - st.session_state.get("_last_add_ts", 0.0)) < 1.2:
+            return
 
-    if st.session_state.get('_do_add_quick') or add_now:
-        txt = (st.session_state.get('quick_in') or '').strip()
-        if txt:
+        if st.session_state.get("_busy_add"):
+            return
+
+        st.session_state["_busy_add"] = True
+        try:
             payload = parse_quick_entry(txt)
             payload.update({
                 "assignee": "Ambos",
                 "created_at": datetime.utcnow().isoformat() + "Z"
             })
             inserir_task(payload)
+
+            # marca última inserção para debounce
+            st.session_state["_last_add_text"] = txt
+            st.session_state["_last_add_ts"] = now_ts
+
             st.toast("Adicionado!")
-            st.session_state.quick_in = ""
-        st.session_state['_do_add_quick'] = False
-        st.session_state.tasks = buscar_tasks()
+            st.session_state["_clear_quick"] = True  # limpar no próximo rerun
+            st.session_state.tasks = buscar_tasks()
+        finally:
+            st.session_state["_busy_add"] = False
+
         st.rerun()
 
-    # ======= Barra de progresso do dia =======
+    def _on_enter_add():
+        # callback: pode ler e usar o valor do widget
+        _add_quick_from_text(st.session_state.get("quick_in"))
+
+    cqi1, cqi2 = st.columns([4, 1])
+    with cqi1:
+        st.text_input(
+            "Digite e pressione Enter",
+            placeholder="Ex.: Reunião amanhã 15h / Pagar boleto 12/02 / Comprar leite #casa",
+            label_visibility="collapsed",
+            key="quick_in",
+            on_change=_on_enter_add
+        )
+
+    with cqi2:
+        if st.button("➕", use_container_width=True):
+            # no clique, usamos o valor atual, mas limpamos no próximo rerun via flag
+            _add_quick_from_text(st.session_state.get("quick_in"))
+
+    # ==========================
+    # Progresso do dia
+    # ==========================
     done, total = _progress_of_today(tasks)
     if total > 0:
-        pct = int((done/total)*100)
-        st.progress(pct/100, text=f"Progresso de hoje: {done}/{total} ({pct}%)")
+        pct = int((done / total) * 100)
+        st.progress(pct / 100, text=f"Progresso de hoje: {done}/{total} ({pct}%)")
     else:
         st.progress(0.0, text="Sem itens para hoje ainda")
 
@@ -178,10 +232,11 @@ def render_tarefas():
     tab_hoje, tab_prox, tab_done = st.tabs(["Hoje", "Próximos", "Concluídos"])
 
     # ==========================
-    # Ações rápidas (com key_ns)
+    # Ações rápidas (key_ns)
     # ==========================
     def _render_quick_actions(t, key_ns: str = ""):
-        col = st.columns([1,1,1,1,1])
+        col = st.columns([1, 1, 1, 1, 1])
+
         # concluir
         with col[0]:
             chk = st.checkbox(
@@ -190,50 +245,61 @@ def render_tarefas():
                 key=f"chk_{key_ns}{t['id']}"
             )
             if chk and t.get("status") != "done":
-                patch = {"status": "done", "completed_at": datetime.utcnow().isoformat()+"Z"}
+                patch = {"status": "done", "completed_at": datetime.utcnow().isoformat() + "Z"}
                 nxt = _next_from_recurrence(t)
+
+                # recorrente: gera próxima
                 if nxt:
                     if t.get("type") == "event":
                         inserir_task({
                             **{k: v for k, v in t.items() if k != 'id'},
                             "status": "todo",
                             "start_at": nxt.isoformat(),
-                            "created_at": datetime.utcnow().isoformat()+"Z",
+                            "created_at": datetime.utcnow().isoformat() + "Z",
                             "updated_at": None,
                             "completed_at": None
                         })
                     else:
                         patch["status"] = "todo"
                         patch["due_at"] = nxt.isoformat()
+
                 atualizar_task(int(t["id"]), patch)
-                st.session_state.tasks = buscar_tasks(); st.rerun()
+                st.session_state.tasks = buscar_tasks()
+                st.rerun()
+
         # +1 dia
         with col[1]:
             if st.button("+1d", key=f"plus1_{key_ns}{t['id']}"):
                 if t.get("type") == "event":
                     s = _iso_to_dt(t.get("start_at")) or datetime.now()
-                    atualizar_task(int(t["id"]), {"start_at": (s+timedelta(days=1)).isoformat()})
+                    atualizar_task(int(t["id"]), {"start_at": (s + timedelta(days=1)).isoformat()})
                 else:
                     d = _iso_to_date(t.get("due_at")) or date.today()
-                    atualizar_task(int(t["id"]), {"due_at": (d+timedelta(days=1)).isoformat()})
-                st.session_state.tasks = buscar_tasks(); st.rerun()
+                    atualizar_task(int(t["id"]), {"due_at": (d + timedelta(days=1)).isoformat()})
+                st.session_state.tasks = buscar_tasks()
+                st.rerun()
+
         # amanhã
         with col[2]:
             if st.button("Amanhã", key=f"tmw_{key_ns}{t['id']}"):
                 if t.get("type") == "event":
                     s = _iso_to_dt(t.get("start_at")) or datetime.now()
-                    base_dt = datetime.combine(date.today()+timedelta(days=1), s.time())
+                    base_dt = datetime.combine(date.today() + timedelta(days=1), s.time())
                     atualizar_task(int(t["id"]), {"start_at": base_dt.isoformat()})
                 else:
-                    atualizar_task(int(t["id"]), {"due_at": (date.today()+timedelta(days=1)).isoformat()})
-                st.session_state.tasks = buscar_tasks(); st.rerun()
+                    atualizar_task(int(t["id"]), {"due_at": (date.today() + timedelta(days=1)).isoformat()})
+                st.session_state.tasks = buscar_tasks()
+                st.rerun()
+
         # importante
         with col[3]:
             imp = t.get("priority", "normal") == "important"
             label = "⭐" if not imp else "⭐ Importante"
             if st.button(label, key=f"imp_{key_ns}{t['id']}"):
                 atualizar_task(int(t["id"]), {"priority": ("normal" if imp else "important")})
-                st.session_state.tasks = buscar_tasks(); st.rerun()
+                st.session_state.tasks = buscar_tasks()
+                st.rerun()
+
         # excluir
         with col[4]:
             st.markdown('<div class="btn-excluir">', unsafe_allow_html=True)
@@ -241,20 +307,25 @@ def render_tarefas():
                 confirmar_exclusao(
                     f"dlg_task_{key_ns}{t['id']}",
                     "Confirmar exclusão",
-                    lambda: deletar_task(int(t['id']))
+                    lambda: deletar_task(int(t["id"]))
                 )
             st.markdown('</div>', unsafe_allow_html=True)
 
     def _render_edit_inline(t):
-        nt = st.text_input("Título", value=t.get("title",""), key=f"et_{t['id']}")
-        nd = st.text_input("Detalhes", value=t.get("description",""), key=f"ed_{t['id']}")
+        nt = st.text_input("Título", value=t.get("title", ""), key=f"et_{t['id']}")
+        nd = st.text_input("Detalhes", value=t.get("description", ""), key=f"ed_{t['id']}")
         st.caption("Reagendamento e ações rápidas")
-        _render_quick_actions(t, key_ns="e_")  # <- evita colisão
+        _render_quick_actions(t, key_ns="e_")  # evita colisão com o cartão
         if st.button("Salvar", key=f"save_{t['id']}"):
-            patch = {"title": nt.strip(), "description": nd.strip(), "updated_at": datetime.utcnow().isoformat()+"Z"}
+            patch = {
+                "title": nt.strip(),
+                "description": nd.strip(),
+                "updated_at": datetime.utcnow().isoformat() + "Z"
+            }
             atualizar_task(int(t["id"]), patch)
             st.toast("Atualizado!")
-            st.session_state.tasks = buscar_tasks(); st.rerun()
+            st.session_state.tasks = buscar_tasks()
+            st.rerun()
 
     def _render_entry(t):
         is_event = (t.get("type") == "event")
@@ -279,11 +350,13 @@ def render_tarefas():
         </div>
         """, unsafe_allow_html=True)
 
-        _render_quick_actions(t, key_ns="v_")  # <- evita colisão
+        _render_quick_actions(t, key_ns="v_")  # evita colisão com editor
         with st.expander("Editar"):
             _render_edit_inline(t)
 
-    # ======= HOJE =======
+    # ==========================
+    # HOJE
+    # ==========================
     with tab_hoje:
         hoje = date.today()
         items = []
@@ -305,11 +378,13 @@ def render_tarefas():
             ev = [x for x in items if x.get("type") == "event"]
             tk = [x for x in items if x.get("type") != "event"]
             ev.sort(key=lambda x: _iso_to_dt(x.get("start_at")) or datetime.now())
-            tk.sort(key=lambda x: (x.get("priority","normal") != "important", x.get("title","")))
+            tk.sort(key=lambda x: (x.get("priority", "normal") != "important", x.get("title", "")))
             for t in (ev + tk):
                 _render_entry(t)
 
-    # ======= PRÓXIMOS =======
+    # ==========================
+    # PRÓXIMOS (14 dias)
+    # ==========================
     with tab_prox:
         horizon = date.today() + timedelta(days=14)
         future = []
@@ -318,11 +393,11 @@ def render_tarefas():
                 continue
             if t.get("type") == "event":
                 s = _iso_to_dt(t.get("start_at"))
-                if s and s.date() > date.today() and s.date() <= horizon:
+                if s and (date.today() < s.date() <= horizon):
                     future.append(t)
             else:
                 d = _iso_to_date(t.get("due_at"))
-                if d and d > date.today() and d <= horizon:
+                if d and (date.today() < d <= horizon):
                     future.append(t)
 
         if not future:
@@ -335,16 +410,21 @@ def render_tarefas():
                 ev = [x for x in day_items if x.get("type") == "event"]
                 tk = [x for x in day_items if x.get("type") != "event"]
                 ev.sort(key=lambda x: _iso_to_dt(x.get("start_at")) or datetime.now())
-                tk.sort(key=lambda x: (x.get("priority","normal") != "important", x.get("title","")))
+                tk.sort(key=lambda x: (x.get("priority", "normal") != "important", x.get("title", "")))
                 for t in (ev + tk):
                     _render_entry(t)
 
-    # ======= CONCLUÍDOS =======
+    # ==========================
+    # CONCLUÍDOS
+    # ==========================
     with tab_done:
         done_items = [t for t in tasks if t.get("status") == "done"]
         if not done_items:
             st.info("Nada concluído ainda por aqui.")
         else:
-            done_items.sort(key=lambda x: x.get("completed_at") or x.get("updated_at") or x.get("created_at") or "", reverse=True)
+            done_items.sort(
+                key=lambda x: x.get("completed_at") or x.get("updated_at") or x.get("created_at") or "",
+                reverse=True
+            )
             for t in done_items[:50]:
                 _render_entry(t)
