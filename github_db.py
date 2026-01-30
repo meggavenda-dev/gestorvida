@@ -315,14 +315,13 @@ def buscar_tasks() -> List[Dict[str, Any]]:
 
 def inserir_task(reg: Dict[str, Any]) -> bool:
     """
-    Insere uma tarefa e retorna True se gravou no GitHub, False caso contrário.
-    Evita falhas por id inválido em registros antigos.
+    Insere uma tarefa e retorna True se gravou (commit OK), False caso contrário.
+    Robusto contra IDs inválidos em registros antigos.
     """
     def updater(obj):
-        # garante lista
         obj = obj if isinstance(obj, list) else []
 
-        # calcula new_id de forma robusta
+        # IDs robustos (ignora inválidos)
         ids = []
         for r in obj:
             if not isinstance(r, dict):
@@ -330,7 +329,6 @@ def inserir_task(reg: Dict[str, Any]) -> bool:
             try:
                 ids.append(int(r.get("id") or 0))
             except Exception:
-                # ignora ids inválidos (None, '', 'abc')
                 pass
 
         new_id = (max(ids) + 1) if ids else 1
@@ -348,7 +346,13 @@ def inserir_task(reg: Dict[str, Any]) -> bool:
         obj.append(reg2)
         return obj
 
-    new_obj, new_sha = safe_update_json(tasks_path("tasks"), updater, commit_message="add task")
+    new_obj, new_sha = safe_update_json(
+        tasks_path("tasks"),
+        updater,
+        commit_message="add task",
+        max_retries=15,   # <- aumenta para concorrência real
+        delay=0.5
+    )
     return bool(new_sha)
 
 def atualizar_task(task_id: int, patch: Dict[str, Any]) -> None:
