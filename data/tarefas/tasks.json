@@ -284,5 +284,20 @@
     "created_at": "2026-01-30T12:18:35.341900Z",
     "id": 22,
     "reminders": []
+  },
+  {
+    "title": "Geap - Retaguarda - Organizar processos para digitação",
+    "description": "",
+    "assignee": "Ambos",
+    "status": "todo",
+    "priority": "normal",
+    "tags": [],
+    "recurrence": null,
+    "due_at": null,
+    "start_at": null,
+    "type": "task",
+    "created_at": "2026-01-30T12:25:06.022357Z",
+    "id": 23,
+    "reminders": []
   }
 ]
