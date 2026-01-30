@@ -112,11 +112,36 @@ def render_tarefas():
     st.session_state.setdefault("_last_add_text", "")
     st.session_state.setdefault("_last_add_ts", 0.0)
 
+    # ✅ Fila de exclusões para deixar UI instantânea
+    st.session_state.setdefault("_pending_deletes", [])  # lista de ids (int)
+
     # ✅ Limpa o input antes do widget existir (evita “corrida”)
     if st.session_state.get("_clear_quick"):
         if "quick_in" in st.session_state:
             del st.session_state["quick_in"]
         st.session_state["_clear_quick"] = False
+
+    # ========= Processa exclusões pendentes (sincronização GitHub) =========
+    # Importante: isso acontece uma vez por rerun, e a UI já “sumiu” com a tarefa antes.
+    if st.session_state.get("_pending_deletes"):
+        pend = list(dict.fromkeys(st.session_state["_pending_deletes"]))  # unique mantendo ordem
+        st.session_state["_pending_deletes"] = []  # limpa já, para não duplicar em caso de erro
+        failures = []
+        with st.spinner(f"Sincronizando exclusão ({len(pend)})..."):
+            for tid in pend:
+                ok = deletar_task(int(tid))
+                if not ok:
+                    failures.append(tid)
+
+        # Recarrega estado real do GitHub uma vez
+        st.session_state.tasks = buscar_tasks()
+
+        if failures:
+            st.warning(f"Algumas exclusões falharam por concorrência: {failures}. Tente novamente em instantes.")
+        else:
+            st.toast("🗑️ Exclusão sincronizada.")
+
+        # não dá rerun aqui; deixa o fluxo seguir e renderizar com o estado atualizado
 
     tasks = st.session_state.tasks
 
@@ -305,6 +330,18 @@ def render_tarefas():
     # ==========================
     # Render de card + ações
     # ==========================
+    def _queue_delete(task_id: int):
+        """Remove do cache AGORA e coloca em fila para sincronizar com GitHub depois."""
+        task_id = int(task_id)
+        # some instantaneamente
+        st.session_state.tasks = [
+            x for x in st.session_state.tasks
+            if int(x.get("id", -1)) != task_id
+        ]
+        # fila de sync
+        if task_id not in st.session_state["_pending_deletes"]:
+            st.session_state["_pending_deletes"].append(task_id)
+
     def _render_quick_actions(t: dict, key_ns: str):
         """Ações rápidas no cartão (com key namespace)."""
         c1, c2, c3, c4, c5 = st.columns([1, 1, 1, 1, 1])
@@ -339,14 +376,14 @@ def render_tarefas():
                 st.session_state.tasks = buscar_tasks()
                 st.rerun()
 
-        # Excluir
+        # Excluir (agora fica instantâneo)
         with c5:
             st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
             if st.button("Excluir", key=f"{key_ns}_del_{t['id']}"):
                 confirmar_exclusao(
                     f"dlg_{key_ns}_{t['id']}",
                     "Confirmar exclusão",
-                    lambda: deletar_task(int(t["id"]))
+                    lambda: _queue_delete(int(t["id"]))
                 )
             st.markdown("</div>", unsafe_allow_html=True)
 
@@ -399,11 +436,9 @@ def render_tarefas():
             nd = st.text_area("Detalhes", value=t.get("description", "") or "", height=90, key=f"{key_ns}_ed_{t['id']}")
 
             dc1, dc2, dc3 = st.columns([1, 1, 1])
-            # Data/hora conforme tipo
             tipo = "Evento" if t.get("type") == "event" else "Tarefa"
             ntipo = dc1.selectbox("Tipo", options=["Tarefa", "Evento"], index=0 if tipo == "Tarefa" else 1, key=f"{key_ns}_tp_{t['id']}")
 
-            # data/hora atuais
             cur_date = _task_day(t)
             cur_dt = _iso_to_dt(t.get("start_at")) if t.get("type") == "event" else None
             ndt = dc2.date_input("Data", value=cur_date, key=f"{key_ns}_d_{t['id']}")
@@ -433,14 +468,12 @@ def render_tarefas():
                     "updated_at": datetime.utcnow().isoformat() + "Z"
                 }
 
-                # aplica data/hora conforme tipo escolhido
                 if ntipo == "Evento":
                     patch["type"] = "event"
                     if ndt and nth:
                         patch["start_at"] = datetime.combine(ndt, nth).isoformat()
                         patch["due_at"] = None
                     else:
-                        # evento sem data/hora vira tarefa sem data
                         patch["type"] = "task"
                         patch["start_at"] = None
                         patch["due_at"] = None
@@ -461,13 +494,8 @@ def render_tarefas():
         status = t.get("status", "todo")
         pr = t.get("priority", "normal")
 
-        # texto data
-        if is_event:
-            when_txt = f"🗓️ {_fmt_dt_br(dt)}"
-        else:
-            when_txt = f"📝 {_fmt_date_br(day)}"
+        when_txt = f"🗓️ {_fmt_dt_br(dt)}" if is_event else f"📝 {_fmt_date_br(day)}"
 
-        # atraso / hoje
         flag = ""
         if _is_overdue(t):
             diff = (date.today() - (day or date.today())).days
@@ -475,13 +503,11 @@ def render_tarefas():
         elif _is_due_today(t) and status in ("todo", "doing"):
             flag = " • 🟡 Vence hoje"
 
-        # tags
         tags = t.get("tags") or []
         tag_txt = ""
         if isinstance(tags, list) and tags:
             tag_txt = " • " + " ".join([f"#{x}" for x in tags[:6]])
 
-        # prioridade
         pr_txt = " • ⭐ Importante" if pr == "important" else ""
 
         st.markdown(f"""
@@ -501,9 +527,6 @@ def render_tarefas():
         _render_quick_actions(t, key_ns=key_ns)
         _render_editor(t, key_ns=key_ns)
 
-    # ==========================
-    # 4) Conteúdos das abas
-    # ==========================
     def _render_list(items: list[dict], key_ns_prefix: str):
         if not items:
             st.info("Nada por aqui.")
@@ -531,7 +554,6 @@ def render_tarefas():
     with tab_done:
         done_items = [t for t in tasks if t.get("status") == "done"]
         done_items = _apply_filters(done_items)
-        # mais recentes primeiro
         done_items.sort(key=lambda x: x.get("completed_at") or x.get("updated_at") or x.get("created_at") or "", reverse=True)
         _render_list(done_items[:80], "done")
 
