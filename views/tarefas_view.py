@@ -22,6 +22,9 @@ STATUS_LABELS = {
 }
 
 
+# -------------------------
+# Helpers de data/hora
+# -------------------------
 def _iso_to_date(x):
     try:
         return datetime.fromisoformat(x).date() if x else None
@@ -37,6 +40,7 @@ def _iso_to_dt(x):
 
 
 def _group_for_agenda(tasks):
+    """Agrupa itens por dia (eventos por start_at, tarefas por due_at)."""
     agenda = {}
     for t in tasks:
         d = None
@@ -50,6 +54,7 @@ def _group_for_agenda(tasks):
 
 
 def _progress_of_today(tasks):
+    """Retorna (done, total) para itens de hoje (eventos e tarefas)."""
     today = date.today()
     total = 0
     done = 0
@@ -70,9 +75,11 @@ def _progress_of_today(tasks):
 
 
 def _next_from_recurrence(t: dict):
+    """Recorrência simples (se existir): daily/weekly/monthly com interval."""
     rec = t.get("recurrence")
     if not rec:
         return None
+
     freq = rec.get("freq")
     interval = int(rec.get("interval", 1) or 1)
 
@@ -100,6 +107,9 @@ def _next_from_recurrence(t: dict):
     return None
 
 
+# -------------------------
+# Notificações (opcional)
+# -------------------------
 def _inject_notifications():
     components.html(
         """
@@ -122,6 +132,9 @@ def _inject_notifications():
     )
 
 
+# -------------------------
+# View principal
+# -------------------------
 def render_tarefas():
     st.markdown(
         """
@@ -142,20 +155,21 @@ def render_tarefas():
     if "pessoas" not in st.session_state or not st.session_state.pessoas:
         st.session_state.pessoas = buscar_pessoas()
 
-    # Flags de controle da entrada rápida
+    # Flags de controle (entrada rápida)
     st.session_state.setdefault("_clear_quick", False)
     st.session_state.setdefault("_busy_add", False)
     st.session_state.setdefault("_last_add_text", "")
     st.session_state.setdefault("_last_add_ts", 0.0)
 
-    # Limpa o input ANTES de criar o widget (evita StreamlitAPIException)
+    # ✅ Limpeza segura do input ANTES do widget existir
+    # (evita StreamlitAPIException e “corrida” com callback/rerun)
     if st.session_state.get("_clear_quick"):
-        st.session_state["quick_in"] = ""
+        if "quick_in" in st.session_state:
+            del st.session_state["quick_in"]
         st.session_state["_clear_quick"] = False
 
     tasks = st.session_state.tasks
 
-    # ======= Notificações Web (in-app) opcional =======
     _inject_notifications()
 
     # ==========================
@@ -163,44 +177,47 @@ def render_tarefas():
     # ==========================
     st.markdown("#### ✍️ Adicionar")
 
-def _add_quick_from_text(txt: str):
-    txt = (txt or "").strip()
-    if not txt:
-        return
+    def _add_quick_from_text(txt: str):
+        """Insere 1 tarefa/evento com debounce + evita duplo envio."""
+        txt = (txt or "").strip()
+        if not txt:
+            return
 
-    now_ts = time.time()
-    if txt == st.session_state.get("_last_add_text") and (now_ts - st.session_state.get("_last_add_ts", 0.0)) < 1.5:
-        return
+        # Debounce simples (evita Enter + clique duplicado / reruns)
+        now_ts = time.time()
+        if txt == st.session_state.get("_last_add_text") and (now_ts - st.session_state.get("_last_add_ts", 0.0)) < 1.5:
+            return
 
-    if st.session_state.get("_busy_add"):
-        return
+        if st.session_state.get("_busy_add"):
+            return
 
-    st.session_state["_busy_add"] = True
-    try:
-        payload = parse_quick_entry(txt)
-        payload.update({
-            "assignee": "Ambos",
-            "created_at": datetime.utcnow().isoformat() + "Z"
-        })
+        st.session_state["_busy_add"] = True
+        try:
+            payload = parse_quick_entry(txt)
+            payload.update({
+                "assignee": "Ambos",
+                "created_at": datetime.utcnow().isoformat() + "Z"
+            })
 
-        ok = inserir_task(payload)
+            # ✅ inserir_task deve retornar bool (True = gravou)
+            ok = inserir_task(payload)
 
-        if ok:
-            st.session_state["_last_add_text"] = txt
-            st.session_state["_last_add_ts"] = now_ts
-            st.session_state["_clear_quick"] = True
-            st.session_state.tasks = buscar_tasks()
-            st.toast(f"✅ Adicionado: {payload.get('title')}")
-            st.rerun()
-        else:
-            st.error("Não consegui salvar agora (concorrência/sincronização). Tente novamente em 2s.")
-    except Exception as e:
-        st.error(f"Erro no processamento: {e}")
-    finally:
-        st.session_state["_busy_add"] = False
+            if ok:
+                st.session_state["_last_add_text"] = txt
+                st.session_state["_last_add_ts"] = now_ts
+                st.session_state["_clear_quick"] = True
+                st.session_state.tasks = buscar_tasks()
+                st.toast(f"✅ Adicionado: {payload.get('title')}")
+                st.rerun()
+            else:
+                st.error("Não consegui salvar agora (concorrência/sincronização). Tente novamente em 2s.")
+        except Exception as e:
+            st.error(f"Erro no processamento/salvamento: {e}")
+        finally:
+            st.session_state["_busy_add"] = False
 
     def _on_enter_add():
-        # callback: pode ler e usar o valor do widget
+        # callback do input
         _add_quick_from_text(st.session_state.get("quick_in"))
 
     cqi1, cqi2 = st.columns([4, 1])
@@ -212,10 +229,8 @@ def _add_quick_from_text(txt: str):
             key="quick_in",
             on_change=_on_enter_add
         )
-
     with cqi2:
         if st.button("➕", use_container_width=True):
-            # no clique, usamos o valor atual, mas limpamos no próximo rerun via flag
             _add_quick_from_text(st.session_state.get("quick_in"))
 
     # ==========================
@@ -337,13 +352,19 @@ def _add_quick_from_text(txt: str):
             d = _iso_to_date(t.get("due_at"))
             head = f"📝 {d.strftime('%d/%m') if d else 'Sem data'}"
 
+        # tags (opcional)
+        tags = t.get("tags") or []
+        tag_txt = ""
+        if isinstance(tags, list) and tags:
+            tag_txt = " • " + " ".join([f"#{x}" for x in tags[:6]])
+
         st.markdown(f"""
         <div class="task-card">
           <div class="task-left">
             <div class="task-icon">{'🗓️' if is_event else '🗒️'}</div>
             <div class="tk-info">
               <div class="tk-title">{t.get('title','(sem título)')}</div>
-              <div class="tk-meta">{head} • Resp.: <b>{t.get('assignee','Ambos')}</b></div>
+              <div class="tk-meta">{head} • Resp.: <b>{t.get('assignee','Ambos')}</b>{tag_txt}</div>
               <div class="status-badge {t.get('status','todo')}">{STATUS_LABELS.get(t.get('status','todo'),'—')}</div>
               <div class="tk-meta">{(t.get('description') or '').strip()}</div>
             </div>
