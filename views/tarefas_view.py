@@ -27,6 +27,9 @@ PRIORITY_OPCOES = ["normal", "important"]
 PRIORITY_LABELS = {"normal": "Normal", "important": "Importante"}
 
 
+# -------------------------
+# Helpers de data/hora (tolerante a "Z")
+# -------------------------
 def _clean_iso(s: str | None) -> str | None:
     if not s:
         return None
@@ -90,26 +93,13 @@ def _progress_metrics(tasks: list[dict]):
 
 
 def _safe_bool(result) -> bool:
+    # compat com funções que retornam None
     return bool(result) if isinstance(result, bool) else True
 
 
-def _prepend_local_task(payload: dict) -> int:
-    temp_id = -int(time.time() * 1000)
-    tmp = dict(payload)
-    tmp["id"] = temp_id
-    tmp.setdefault("status", "todo")
-    tmp.setdefault("priority", "normal")
-    tmp.setdefault("type", "task")
-    tmp.setdefault("tags", [])
-    st.session_state.tasks = st.session_state.get("tasks", [])
-    st.session_state.tasks = [tmp] + st.session_state.tasks
-    return temp_id
-
-
-def _rollback_local_task(temp_id: int):
-    st.session_state.tasks = [t for t in st.session_state.tasks if int(t.get("id", 0)) != int(temp_id)]
-
-
+# -------------------------
+# Helpers: patch local (evita GET por clique)
+# -------------------------
 def _apply_local_patch(task_id: int, patch: dict) -> list[dict]:
     backup = list(st.session_state.get("tasks", []))
     new_list = []
@@ -137,6 +127,9 @@ def _commit_patch(task_id: int, patch: dict, backup: list[dict]) -> bool:
     return True
 
 
+# -------------------------
+# Render
+# -------------------------
 def render_tarefas():
     st.markdown(
         """
@@ -148,6 +141,7 @@ def render_tarefas():
         unsafe_allow_html=True
     )
 
+    # ========= Estado base =========
     if "tasks" not in st.session_state:
         st.session_state.tasks = buscar_tasks()
 
@@ -156,12 +150,7 @@ def render_tarefas():
 
     PESSOAS = st.session_state.pessoas or ["Guilherme", "Alynne", "Ambos"]
 
-    st.session_state.setdefault("_clear_quick", False)
-    st.session_state.setdefault("_busy_add", False)
-    st.session_state.setdefault("_last_add_text", "")
-    st.session_state.setdefault("_last_add_ts", 0.0)
-
-    # Sync leve para 2 dispositivos
+    # Sync leve para 2 dispositivos (sem forçar rerun)
     st.session_state.setdefault("_tasks_last_sync", 0.0)
 
     def _sync_if_old(ttl=30):
@@ -173,11 +162,6 @@ def render_tarefas():
 
     _sync_if_old(ttl=30)
 
-    if st.session_state.get("_clear_quick"):
-        if "quick_in" in st.session_state:
-            del st.session_state["quick_in"]
-        st.session_state["_clear_quick"] = False
-
     # Botão sync manual
     _, top2 = st.columns([10, 1])
     with top2:
@@ -185,10 +169,10 @@ def render_tarefas():
             st.session_state.tasks = buscar_tasks()
             st.session_state["_tasks_last_sync"] = time.time()
             st.toast("Sincronizado.")
-            st.rerun()
 
     tasks = st.session_state.tasks
 
+    # ========= Métricas =========
     total, abertas, hoje_qtd, atrasadas = _progress_metrics(tasks)
     m1, m2, m3, m4 = st.columns(4)
     m1.metric("Total", str(total))
@@ -197,64 +181,50 @@ def render_tarefas():
     m4.metric("Atrasadas", str(atrasadas))
 
     st.divider()
+
+    # =========================================================
+    # 1) ADICIONAR (sem piscar): Quick Add em FORM + Detalhado em FORM
+    # =========================================================
     st.markdown("### ➕ Adicionar")
 
-    def _add_from_text(txt: str):
-        txt = (txt or "").strip()
-        if not txt:
-            return
+    # ---- QUICK ADD: form com clear_on_submit => sem _clear_quick e sem rerun manual ----
+    with st.form("form_quick_add", clear_on_submit=True):
+        qc1, qc2 = st.columns([4, 1])
+        with qc1:
+            quick_txt = st.text_input(
+                "Entrada rápida",
+                placeholder="Ex.: Reunião amanhã 15h / Pagar boleto 12/02 / Comprar leite #casa",
+                label_visibility="collapsed",
+            )
+        with qc2:
+            submitted_quick = st.form_submit_button("Adicionar", use_container_width=True)
 
-        now_ts = time.time()
-        if txt == st.session_state.get("_last_add_text") and (now_ts - st.session_state.get("_last_add_ts", 0.0)) < 1.5:
-            return
-        if st.session_state.get("_busy_add"):
-            return
-
-        st.session_state["_busy_add"] = True
-        temp_id = None
-        try:
-            payload = parse_quick_entry(txt)
-            payload.update({
-                "assignee": "Ambos",
-                "created_at": datetime.utcnow().isoformat() + "Z",
-                "updated_at": None
-            })
-
-            temp_id = _prepend_local_task(payload)
-            ok = _safe_bool(inserir_task(payload))
-
-            if ok:
-                st.session_state.tasks = buscar_tasks()
-                st.session_state["_tasks_last_sync"] = time.time()
-                st.session_state["_last_add_text"] = txt
-                st.session_state["_last_add_ts"] = now_ts
-                st.session_state["_clear_quick"] = True
-                st.toast("✅ Salvo.")
-                st.rerun()
+        if submitted_quick:
+            txt = (quick_txt or "").strip()
+            if not txt:
+                st.warning("Digite algo para adicionar.")
             else:
-                if temp_id is not None:
-                    _rollback_local_task(temp_id)
-                st.error("Não consegui salvar agora (concorrência). Tente novamente em instantes.")
-        except Exception as e:
-            if temp_id is not None:
-                _rollback_local_task(temp_id)
-            st.error(f"Erro no salvamento: {e}")
-        finally:
-            st.session_state["_busy_add"] = False
+                try:
+                    payload = parse_quick_entry(txt)
+                    payload.update({
+                        "assignee": "Ambos",
+                        "created_at": datetime.utcnow().isoformat() + "Z",
+                        "updated_at": None
+                    })
 
-    c1, c2 = st.columns([4, 1])
-    with c1:
-        st.text_input(
-            "Entrada rápida",
-            placeholder="Ex.: Reunião amanhã 15h / Pagar boleto 12/02 / Comprar leite #casa",
-            label_visibility="collapsed",
-            key="quick_in"
-        )
-    with c2:
-        if st.button("Adicionar", use_container_width=True):
-            _add_from_text(st.session_state.get("quick_in"))
+                    ok = _safe_bool(inserir_task(payload))
+                    if ok:
+                        # ✅ atualiza lista uma vez, sem st.rerun()
+                        st.session_state.tasks = buscar_tasks()
+                        st.session_state["_tasks_last_sync"] = time.time()
+                        st.toast(f"✅ Adicionado: {payload.get('title', 'Tarefa')}")
+                    else:
+                        st.error("Não consegui salvar agora (concorrência). Tente novamente em instantes.")
+                except Exception as e:
+                    st.error(f"Erro no salvamento: {e}")
 
-    with st.expander("➕ Adicionar com detalhes (opcional)"):
+    # ---- FORM DETALHADO: checkboxes para data/hora (mais estável que value=None) ----
+    with st.expander("➕ Adicionar com detalhes (opcional)", expanded=False):
         with st.form("form_task_full", clear_on_submit=True):
             fc1, fc2, fc3 = st.columns([2, 1, 1])
             title = fc1.text_input("Título", placeholder="O que precisa ser feito?")
@@ -264,19 +234,35 @@ def render_tarefas():
             desc = st.text_area("Detalhes", placeholder="Opcional", height=80)
 
             dc1, dc2, dc3 = st.columns([1, 1, 1])
-            dsel = dc1.date_input("Data", value=None)
-            tsel = dc2.time_input("Hora (opcional)", value=None)
-            status = dc3.selectbox("Status", options=STATUS_OPCOES, format_func=lambda x: STATUS_LABELS.get(x, x), index=0)
+            status = dc1.selectbox(
+                "Status",
+                options=STATUS_OPCOES,
+                format_func=lambda x: STATUS_LABELS.get(x, x),
+                index=0
+            )
+            priority = dc2.selectbox(
+                "Prioridade",
+                options=PRIORITY_OPCOES,
+                format_func=lambda x: PRIORITY_LABELS.get(x, x),
+                index=0
+            )
+            tags_txt = dc3.text_input("Tags (opcional)", placeholder="#trabalho #casa")
 
-            pc1, pc2 = st.columns([1, 1])
-            priority = pc1.selectbox("Prioridade", options=PRIORITY_OPCOES, format_func=lambda x: PRIORITY_LABELS.get(x, x), index=0)
-            tags_txt = pc2.text_input("Tags (opcional)", placeholder="#trabalho #casa")
+            st.markdown("**Quando?**")
+            cc1, cc2, cc3 = st.columns([1, 1, 1])
 
-            submitted = st.form_submit_button("Salvar")
-            if submitted:
+            use_date = cc1.checkbox("Definir data", value=False)
+            chosen_date = cc2.date_input("Data", value=date.today(), disabled=not use_date)
+            # Hora só faz sentido se for Evento
+            use_time = cc3.checkbox("Definir hora (evento)", value=False, disabled=(tipo != "Evento" or not use_date))
+            chosen_time = st.time_input("Hora", value=dtime(9, 0), disabled=(tipo != "Evento" or not use_date or not use_time))
+
+            submitted_full = st.form_submit_button("Salvar")
+            if submitted_full:
                 if not title.strip():
                     st.error("Informe o título.")
                 else:
+                    # tags
                     tags = []
                     for part in (tags_txt or "").split():
                         if part.startswith("#") and len(part) > 1:
@@ -293,37 +279,49 @@ def render_tarefas():
                         "updated_at": None
                     }
 
-                    if tipo == "Evento" and dsel and tsel:
+                    # decide type + datas
+                    if tipo == "Evento":
                         payload["type"] = "event"
-                        payload["start_at"] = datetime.combine(dsel, tsel).isoformat()
+                        if use_date and use_time:
+                            payload["start_at"] = datetime.combine(chosen_date, chosen_time).isoformat()
+                        elif use_date:
+                            # evento sem hora => assume 09:00
+                            payload["start_at"] = datetime.combine(chosen_date, dtime(9, 0)).isoformat()
+                        else:
+                            payload["start_at"] = None
                         payload["due_at"] = None
                     else:
                         payload["type"] = "task"
-                        payload["due_at"] = dsel.isoformat() if dsel else None
+                        payload["due_at"] = chosen_date.isoformat() if use_date else None
                         payload["start_at"] = None
 
-                    temp_id = _prepend_local_task(payload)
                     ok = _safe_bool(inserir_task(payload))
                     if ok:
                         st.session_state.tasks = buscar_tasks()
                         st.session_state["_tasks_last_sync"] = time.time()
-                        st.toast("✅ Salvo!")
-                        st.rerun()
+                        st.toast("✅ Salvo com detalhes!")
                     else:
-                        _rollback_local_task(temp_id)
-                        st.error("Falha ao gravar no GitHub. Tente novamente.")
+                        st.error("Falha ao gravar no GitHub (concorrência). Tente novamente.")
 
     st.divider()
 
-    # Filtros
+    # =================================
+    # 2) Filtros
+    # =================================
     f1, f2, f3 = st.columns([1.5, 1.5, 1])
-    status_sel = f1.multiselect("Status", STATUS_OPCOES, default=["todo", "doing"],
-                               format_func=lambda x: STATUS_LABELS.get(x, x), key="flt_status")
+    status_sel = f1.multiselect(
+        "Status",
+        STATUS_OPCOES,
+        default=["todo", "doing"],
+        format_func=lambda x: STATUS_LABELS.get(x, x),
+        key="flt_status"
+    )
     resp_sel = f2.selectbox("Responsável", options=["Todos"] + PESSOAS, index=0, key="flt_resp")
     janela = f3.selectbox("Janela", options=["Todos", "Hoje", "Próximos 7 dias", "Próximos 30 dias"], index=0, key="flt_janela")
 
     def _apply_filters(items: list[dict]):
         out = list(items)
+
         if status_sel:
             out = [t for t in out if t.get("status") in status_sel]
         if resp_sel != "Todos":
@@ -354,20 +352,17 @@ def render_tarefas():
     st.divider()
     tab_hoje, tab_prox, tab_done, tab_all = st.tabs(["Hoje", "Próximos", "Concluídos", "Todas (filtros)"])
 
-    # ✅ Delete imediato pós-confirmação (sem fila => sem “piscar 2x”)
+    # ========= delete imediato pós-confirmação (mantém confirmação) =========
     def _delete_now(task_id: int):
         task_id = int(task_id)
 
-        # remove local primeiro (UX rápida)
+        # remove local primeiro
         st.session_state.tasks = [t for t in st.session_state.tasks if int(t.get("id", -1)) != task_id]
 
-        with st.spinner("Excluindo…"):
-            ok = _safe_bool(deletar_tasks_bulk([task_id]))
-            if not ok:
-                # fallback individual
-                ok = _safe_bool(deletar_task(task_id))
+        ok = _safe_bool(deletar_tasks_bulk([task_id]))
+        if not ok:
+            ok = _safe_bool(deletar_task(task_id))
 
-        # sincroniza estado final uma vez
         st.session_state.tasks = buscar_tasks()
         st.session_state["_tasks_last_sync"] = time.time()
 
@@ -376,10 +371,6 @@ def render_tarefas():
 
     def _render_quick_actions(t: dict, key_ns: str):
         tid = int(t.get("id", 0))
-        if tid < 0:
-            st.caption("⏳ Sincronizando…")
-            return
-
         c1, c2, c3, c4, c5 = st.columns([1, 1, 1, 1, 1])
 
         with c1:
@@ -388,21 +379,18 @@ def render_tarefas():
                     patch = {"status": "done", "completed_at": datetime.utcnow().isoformat() + "Z"}
                     backup = _apply_local_patch(tid, patch)
                     _commit_patch(tid, patch, backup)
-                    st.rerun()
 
         with c2:
             if st.button("⏳ Não Iniciado", key=f"{key_ns}_todo_{tid}"):
                 patch = {"status": "todo", "updated_at": datetime.utcnow().isoformat() + "Z"}
                 backup = _apply_local_patch(tid, patch)
                 _commit_patch(tid, patch, backup)
-                st.rerun()
 
         with c3:
             if st.button("🔄 Em Progresso", key=f"{key_ns}_doing_{tid}"):
                 patch = {"status": "doing", "updated_at": datetime.utcnow().isoformat() + "Z"}
                 backup = _apply_local_patch(tid, patch)
                 _commit_patch(tid, patch, backup)
-                st.rerun()
 
         with c4:
             imp = (t.get("priority") == "important")
@@ -411,9 +399,7 @@ def render_tarefas():
                 patch = {"priority": ("normal" if imp else "important"), "updated_at": datetime.utcnow().isoformat() + "Z"}
                 backup = _apply_local_patch(tid, patch)
                 _commit_patch(tid, patch, backup)
-                st.rerun()
 
-        # ✅ confirmação em 1 clique (via ui_helpers corrigido)
         with c5:
             st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
             if st.button("Excluir", key=f"{key_ns}_del_{tid}"):
@@ -424,7 +410,7 @@ def render_tarefas():
                 )
             st.markdown("</div>", unsafe_allow_html=True)
 
-        # reagendar
+        # reagendar rápido
         r1, r2, r3 = st.columns([1, 1, 1])
         with r1:
             if st.button("Amanhã", key=f"{key_ns}_tmw_{tid}"):
@@ -436,7 +422,6 @@ def render_tarefas():
                     patch = {"due_at": (date.today() + timedelta(days=1)).isoformat(), "updated_at": datetime.utcnow().isoformat() + "Z"}
                 backup = _apply_local_patch(tid, patch)
                 _commit_patch(tid, patch, backup)
-                st.rerun()
 
         with r2:
             if st.button("+1d", key=f"{key_ns}_p1_{tid}"):
@@ -448,7 +433,6 @@ def render_tarefas():
                     patch = {"due_at": (d + timedelta(days=1)).isoformat(), "updated_at": datetime.utcnow().isoformat() + "Z"}
                 backup = _apply_local_patch(tid, patch)
                 _commit_patch(tid, patch, backup)
-                st.rerun()
 
         with r3:
             if st.button("Sem data", key=f"{key_ns}_nodate_{tid}"):
@@ -458,12 +442,9 @@ def render_tarefas():
                     patch = {"due_at": None, "updated_at": datetime.utcnow().isoformat() + "Z"}
                 backup = _apply_local_patch(tid, patch)
                 _commit_patch(tid, patch, backup)
-                st.rerun()
 
     def _render_editor(t: dict, key_ns: str):
         tid = int(t.get("id", 0))
-        if tid < 0:
-            return
         with st.expander("Editar"):
             ec1, ec2, ec3 = st.columns([2, 1, 1])
             nt = ec1.text_input("Título", value=t.get("title", ""), key=f"{key_ns}_et_{tid}")
@@ -480,20 +461,25 @@ def render_tarefas():
                 index=STATUS_OPCOES.index(t.get("status", "todo")) if t.get("status", "todo") in STATUS_OPCOES else 0,
                 key=f"{key_ns}_es_{tid}"
             )
+
             nd = st.text_area("Detalhes", value=t.get("description", "") or "", height=90, key=f"{key_ns}_ed_{tid}")
 
             dc1, dc2, dc3 = st.columns([1, 1, 1])
-            tipo = "Evento" if t.get("type") == "event" else "Tarefa"
-            ntipo = dc1.selectbox("Tipo", options=["Tarefa", "Evento"], index=0 if tipo == "Tarefa" else 1, key=f"{key_ns}_tp_{tid}")
+            tipo_atual = "Evento" if t.get("type") == "event" else "Tarefa"
+            ntipo = dc1.selectbox("Tipo", options=["Tarefa", "Evento"], index=0 if tipo_atual == "Tarefa" else 1, key=f"{key_ns}_tp_{tid}")
             cur_date = _task_day(t)
             cur_dt = _iso_to_dt(t.get("start_at")) if t.get("type") == "event" else None
-            ndt = dc2.date_input("Data", value=cur_date, key=f"{key_ns}_d_{tid}")
-            nth = dc3.time_input("Hora (se evento)", value=(cur_dt.time() if cur_dt else None), key=f"{key_ns}_h_{tid}")
+            ndt = dc2.date_input("Data", value=(cur_date or date.today()), key=f"{key_ns}_d_{tid}")
+            nth = dc3.time_input("Hora (se evento)", value=((cur_dt.time()) if cur_dt else dtime(9, 0)), key=f"{key_ns}_h_{tid}")
 
             pc1, pc2 = st.columns([1, 1])
-            nprio = pc1.selectbox("Prioridade", options=PRIORITY_OPCOES, format_func=lambda x: PRIORITY_LABELS.get(x, x),
-                                  index=PRIORITY_OPCOES.index(t.get("priority", "normal")) if t.get("priority", "normal") in PRIORITY_OPCOES else 0,
-                                  key=f"{key_ns}_pr_{tid}")
+            nprio = pc1.selectbox(
+                "Prioridade",
+                options=PRIORITY_OPCOES,
+                format_func=lambda x: PRIORITY_LABELS.get(x, x),
+                index=PRIORITY_OPCOES.index(t.get("priority", "normal")) if t.get("priority", "normal") in PRIORITY_OPCOES else 0,
+                key=f"{key_ns}_pr_{tid}"
+            )
             ntags = pc2.text_input("Tags", value=" ".join([f"#{x}" for x in (t.get("tags") or [])]),
                                    placeholder="#trabalho #casa", key=f"{key_ns}_tg_{tid}")
 
@@ -515,13 +501,8 @@ def render_tarefas():
 
                 if ntipo == "Evento":
                     patch["type"] = "event"
-                    if ndt and nth:
-                        patch["start_at"] = datetime.combine(ndt, nth).isoformat()
-                        patch["due_at"] = None
-                    else:
-                        patch["type"] = "task"
-                        patch["start_at"] = None
-                        patch["due_at"] = None
+                    patch["start_at"] = datetime.combine(ndt, nth).isoformat()
+                    patch["due_at"] = None
                 else:
                     patch["type"] = "task"
                     patch["start_at"] = None
@@ -530,7 +511,6 @@ def render_tarefas():
                 backup = _apply_local_patch(tid, patch)
                 _commit_patch(tid, patch, backup)
                 st.toast("✅ Atualizado!")
-                st.rerun()
 
     def _render_card(t: dict, key_ns: str):
         is_event = (t.get("type") == "event")
@@ -575,6 +555,7 @@ def render_tarefas():
         for t in items:
             _render_card(t, key_ns=f"{key_ns_prefix}_{t.get('id')}")
 
+    # Abas
     with tab_hoje:
         hoje_items = [t for t in st.session_state.tasks if t.get("status") != "done" and _task_day(t) == date.today()]
         _render_list(_apply_filters(hoje_items), "hoje")
