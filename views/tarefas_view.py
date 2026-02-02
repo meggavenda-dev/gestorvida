@@ -187,7 +187,7 @@ def render_tarefas():
     # =========================================================
     st.markdown("### ➕ Adicionar")
 
-    # ---- QUICK ADD: form com clear_on_submit => sem _clear_quick e sem rerun manual ----
+    # ---- QUICK ADD: form com clear_on_submit => sem st.rerun manual ----
     with st.form("form_quick_add", clear_on_submit=True):
         qc1, qc2 = st.columns([4, 1])
         with qc1:
@@ -195,6 +195,7 @@ def render_tarefas():
                 "Entrada rápida",
                 placeholder="Ex.: Reunião amanhã 15h / Pagar boleto 12/02 / Comprar leite #casa",
                 label_visibility="collapsed",
+                key="quick_txt"
             )
         with qc2:
             submitted_quick = st.form_submit_button("Adicionar", use_container_width=True)
@@ -214,7 +215,6 @@ def render_tarefas():
 
                     ok = _safe_bool(inserir_task(payload))
                     if ok:
-                        # ✅ atualiza lista uma vez, sem st.rerun()
                         st.session_state.tasks = buscar_tasks()
                         st.session_state["_tasks_last_sync"] = time.time()
                         st.toast(f"✅ Adicionado: {payload.get('title', 'Tarefa')}")
@@ -223,46 +223,47 @@ def render_tarefas():
                 except Exception as e:
                     st.error(f"Erro no salvamento: {e}")
 
-    # ---- FORM DETALHADO: checkboxes para data/hora (mais estável que value=None) ----
+    # ---- FORM DETALHADO (corrigido): keys únicos + data/hora garantidas ----
     with st.expander("➕ Adicionar com detalhes (opcional)", expanded=False):
         with st.form("form_task_full", clear_on_submit=True):
             fc1, fc2, fc3 = st.columns([2, 1, 1])
-            title = fc1.text_input("Título", placeholder="O que precisa ser feito?")
-            tipo = fc2.selectbox("Tipo", options=["Tarefa", "Evento"], index=0)
-            assignee = fc3.selectbox("Responsável", options=PESSOAS, index=0)
+            title = fc1.text_input("Título", placeholder="O que precisa ser feito?", key="full_title")
+            tipo = fc2.selectbox("Tipo", options=["Tarefa", "Evento"], index=0, key="full_tipo")
+            assignee = fc3.selectbox("Responsável", options=PESSOAS, index=0, key="full_assignee")
 
-            desc = st.text_area("Detalhes", placeholder="Opcional", height=80)
+            desc = st.text_area("Detalhes", placeholder="Opcional", height=80, key="full_desc")
 
             dc1, dc2, dc3 = st.columns([1, 1, 1])
-            status = dc1.selectbox(
-                "Status",
-                options=STATUS_OPCOES,
-                format_func=lambda x: STATUS_LABELS.get(x, x),
-                index=0
-            )
-            priority = dc2.selectbox(
-                "Prioridade",
-                options=PRIORITY_OPCOES,
-                format_func=lambda x: PRIORITY_LABELS.get(x, x),
-                index=0
-            )
-            tags_txt = dc3.text_input("Tags (opcional)", placeholder="#trabalho #casa")
+            status = dc1.selectbox("Status", options=STATUS_OPCOES,
+                                   format_func=lambda x: STATUS_LABELS.get(x, x), index=0, key="full_status")
+            priority = dc2.selectbox("Prioridade", options=PRIORITY_OPCOES,
+                                     format_func=lambda x: PRIORITY_LABELS.get(x, x), index=0, key="full_priority")
+            tags_txt = dc3.text_input("Tags (opcional)", placeholder="#trabalho #casa", key="full_tags")
 
             st.markdown("**Quando?**")
-            cc1, cc2, cc3 = st.columns([1, 1, 1])
+            cc1, cc2, cc3 = st.columns([1, 1.4, 1])
 
-            use_date = cc1.checkbox("Definir data", value=False)
-            chosen_date = cc2.date_input("Data", value=date.today(), disabled=not use_date)
-            # Hora só faz sentido se for Evento
-            use_time = cc3.checkbox("Definir hora (evento)", value=False, disabled=(tipo != "Evento" or not use_date))
-            chosen_time = st.time_input("Hora", value=dtime(9, 0), disabled=(tipo != "Evento" or not use_date or not use_time))
+            use_date = cc1.checkbox("Definir data", value=False, key="full_use_date")
+            chosen_date = cc2.date_input("Data", value=date.today(), disabled=not use_date, key="full_date")
 
-            submitted_full = st.form_submit_button("Salvar")
+            use_time = cc3.checkbox(
+                "Definir hora",
+                value=False,
+                disabled=(tipo != "Evento" or not use_date),
+                key="full_use_time"
+            )
+            chosen_time = st.time_input(
+                "Hora",
+                value=dtime(9, 0),
+                disabled=(tipo != "Evento" or not use_date or not use_time),
+                key="full_time"
+            )
+
+            submitted_full = st.form_submit_button("Salvar", use_container_width=True)
             if submitted_full:
                 if not title.strip():
                     st.error("Informe o título.")
                 else:
-                    # tags
                     tags = []
                     for part in (tags_txt or "").split():
                         if part.startswith("#") and len(part) > 1:
@@ -279,21 +280,20 @@ def render_tarefas():
                         "updated_at": None
                     }
 
-                    # decide type + datas
+                    # ✅ Montagem garantida de data/hora
                     if tipo == "Evento":
                         payload["type"] = "event"
-                        if use_date and use_time:
-                            payload["start_at"] = datetime.combine(chosen_date, chosen_time).isoformat()
-                        elif use_date:
-                            # evento sem hora => assume 09:00
-                            payload["start_at"] = datetime.combine(chosen_date, dtime(9, 0)).isoformat()
+                        payload["due_at"] = None
+
+                        if use_date:
+                            hhmm = chosen_time if use_time else dtime(9, 0)
+                            payload["start_at"] = datetime.combine(chosen_date, hhmm).isoformat()
                         else:
                             payload["start_at"] = None
-                        payload["due_at"] = None
                     else:
                         payload["type"] = "task"
-                        payload["due_at"] = chosen_date.isoformat() if use_date else None
                         payload["start_at"] = None
+                        payload["due_at"] = chosen_date.isoformat() if use_date else None
 
                     ok = _safe_bool(inserir_task(payload))
                     if ok:
@@ -410,104 +410,28 @@ def render_tarefas():
                 )
             st.markdown("</div>", unsafe_allow_html=True)
 
-        # reagendar rápido
-        r1, r2, r3 = st.columns([1, 1, 1])
-        with r1:
-            if st.button("Amanhã", key=f"{key_ns}_tmw_{tid}"):
-                if t.get("type") == "event":
-                    s = _iso_to_dt(t.get("start_at")) or datetime.now()
-                    ndt = datetime.combine(date.today() + timedelta(days=1), s.time())
-                    patch = {"start_at": ndt.isoformat(), "updated_at": datetime.utcnow().isoformat() + "Z"}
-                else:
-                    patch = {"due_at": (date.today() + timedelta(days=1)).isoformat(), "updated_at": datetime.utcnow().isoformat() + "Z"}
-                backup = _apply_local_patch(tid, patch)
-                _commit_patch(tid, patch, backup)
-
-        with r2:
-            if st.button("+1d", key=f"{key_ns}_p1_{tid}"):
-                if t.get("type") == "event":
-                    s = _iso_to_dt(t.get("start_at")) or datetime.now()
-                    patch = {"start_at": (s + timedelta(days=1)).isoformat(), "updated_at": datetime.utcnow().isoformat() + "Z"}
-                else:
-                    d = _iso_to_date(t.get("due_at")) or date.today()
-                    patch = {"due_at": (d + timedelta(days=1)).isoformat(), "updated_at": datetime.utcnow().isoformat() + "Z"}
-                backup = _apply_local_patch(tid, patch)
-                _commit_patch(tid, patch, backup)
-
-        with r3:
-            if st.button("Sem data", key=f"{key_ns}_nodate_{tid}"):
-                if t.get("type") == "event":
-                    patch = {"start_at": None, "type": "task", "due_at": None, "updated_at": datetime.utcnow().isoformat() + "Z"}
-                else:
-                    patch = {"due_at": None, "updated_at": datetime.utcnow().isoformat() + "Z"}
-                backup = _apply_local_patch(tid, patch)
-                _commit_patch(tid, patch, backup)
-
     def _render_editor(t: dict, key_ns: str):
         tid = int(t.get("id", 0))
         with st.expander("Editar"):
             ec1, ec2, ec3 = st.columns([2, 1, 1])
             nt = ec1.text_input("Título", value=t.get("title", ""), key=f"{key_ns}_et_{tid}")
-            nass = ec2.selectbox(
-                "Responsável",
-                options=PESSOAS,
-                index=PESSOAS.index(t.get("assignee", "Ambos")) if t.get("assignee", "Ambos") in PESSOAS else 0,
-                key=f"{key_ns}_ea_{tid}"
-            )
-            nstatus = ec3.selectbox(
-                "Status",
-                options=STATUS_OPCOES,
-                format_func=lambda x: STATUS_LABELS.get(x, x),
-                index=STATUS_OPCOES.index(t.get("status", "todo")) if t.get("status", "todo") in STATUS_OPCOES else 0,
-                key=f"{key_ns}_es_{tid}"
-            )
-
+            nass = ec2.selectbox("Responsável", options=PESSOAS,
+                                 index=PESSOAS.index(t.get("assignee", "Ambos")) if t.get("assignee", "Ambos") in PESSOAS else 0,
+                                 key=f"{key_ns}_ea_{tid}")
+            nstatus = ec3.selectbox("Status", options=STATUS_OPCOES,
+                                    format_func=lambda x: STATUS_LABELS.get(x, x),
+                                    index=STATUS_OPCOES.index(t.get("status", "todo")) if t.get("status", "todo") in STATUS_OPCOES else 0,
+                                    key=f"{key_ns}_es_{tid}")
             nd = st.text_area("Detalhes", value=t.get("description", "") or "", height=90, key=f"{key_ns}_ed_{tid}")
 
-            dc1, dc2, dc3 = st.columns([1, 1, 1])
-            tipo_atual = "Evento" if t.get("type") == "event" else "Tarefa"
-            ntipo = dc1.selectbox("Tipo", options=["Tarefa", "Evento"], index=0 if tipo_atual == "Tarefa" else 1, key=f"{key_ns}_tp_{tid}")
-            cur_date = _task_day(t)
-            cur_dt = _iso_to_dt(t.get("start_at")) if t.get("type") == "event" else None
-            ndt = dc2.date_input("Data", value=(cur_date or date.today()), key=f"{key_ns}_d_{tid}")
-            nth = dc3.time_input("Hora (se evento)", value=((cur_dt.time()) if cur_dt else dtime(9, 0)), key=f"{key_ns}_h_{tid}")
-
-            pc1, pc2 = st.columns([1, 1])
-            nprio = pc1.selectbox(
-                "Prioridade",
-                options=PRIORITY_OPCOES,
-                format_func=lambda x: PRIORITY_LABELS.get(x, x),
-                index=PRIORITY_OPCOES.index(t.get("priority", "normal")) if t.get("priority", "normal") in PRIORITY_OPCOES else 0,
-                key=f"{key_ns}_pr_{tid}"
-            )
-            ntags = pc2.text_input("Tags", value=" ".join([f"#{x}" for x in (t.get("tags") or [])]),
-                                   placeholder="#trabalho #casa", key=f"{key_ns}_tg_{tid}")
-
             if st.button("Salvar alterações", key=f"{key_ns}_save_{tid}"):
-                tags = []
-                for part in (ntags or "").split():
-                    if part.startswith("#") and len(part) > 1:
-                        tags.append(part[1:].lower())
-
                 patch = {
                     "title": (nt or "").strip(),
                     "description": (nd or "").strip(),
                     "assignee": nass,
                     "status": nstatus,
-                    "priority": nprio,
-                    "tags": tags,
                     "updated_at": datetime.utcnow().isoformat() + "Z"
                 }
-
-                if ntipo == "Evento":
-                    patch["type"] = "event"
-                    patch["start_at"] = datetime.combine(ndt, nth).isoformat()
-                    patch["due_at"] = None
-                else:
-                    patch["type"] = "task"
-                    patch["start_at"] = None
-                    patch["due_at"] = ndt.isoformat() if ndt else None
-
                 backup = _apply_local_patch(tid, patch)
                 _commit_patch(tid, patch, backup)
                 st.toast("✅ Atualizado!")
@@ -555,7 +479,7 @@ def render_tarefas():
         for t in items:
             _render_card(t, key_ns=f"{key_ns_prefix}_{t.get('id')}")
 
-    # Abas
+    # Render das listas por aba
     with tab_hoje:
         hoje_items = [t for t in st.session_state.tasks if t.get("status") != "done" and _task_day(t) == date.today()]
         _render_list(_apply_filters(hoje_items), "hoje")
