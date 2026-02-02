@@ -75,21 +75,5 @@
     "updated_at": "2026-01-30T22:22:58.136843Z",
     "id": 9,
     "reminders": []
-  },
-  {
-    "title": "teste",
-    "description": "",
-    "assignee": "Ambos",
-    "status": "todo",
-    "priority": "normal",
-    "tags": [],
-    "recurrence": null,
-    "due_at": null,
-    "start_at": null,
-    "type": "task",
-    "created_at": "2026-02-02T13:02:49.428382Z",
-    "updated_at": null,
-    "id": 10,
-    "reminders": []
   }
 ]
