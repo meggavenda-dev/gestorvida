@@ -417,6 +417,44 @@ def deletar_task(task_id: int) -> bool:
     )
     return bool(new_sha)
 
+def deletar_tasks_bulk(task_ids: list[int]) -> bool:
+    """
+    Remove várias tarefas em um único commit (1 GET + 1 PUT).
+    Ideal para fila _pending_deletes no mobile.
+    """
+    ids_set = set()
+    for x in (task_ids or []):
+        try:
+            ids_set.add(int(x))
+        except Exception:
+            pass
+
+    if not ids_set:
+        return True
+
+    def updater(obj):
+        obj = obj if isinstance(obj, list) else []
+        out = []
+        for r in obj:
+            if not isinstance(r, dict):
+                continue
+            try:
+                rid = int(r.get("id", -1))
+            except Exception:
+                continue
+            if rid not in ids_set:
+                out.append(r)
+        return out
+
+    _obj, new_sha = safe_update_json(
+        tasks_path("tasks"),
+        updater,
+        commit_message=f"bulk delete tasks {len(ids_set)}",
+        max_retries=8,
+        delay=0.35
+    )
+    return bool(new_sha)
+
 
 # =================================================
 #                       SAÚDE (LEGADO: HÁBITOS)
