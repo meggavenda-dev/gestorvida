@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import time
 import streamlit as st
-import pandas as pd
 from datetime import datetime, date, timedelta, time as dtime
 
-from github_db import buscar_tasks, inserir_task, atualizar_task, deletar_task, buscar_pessoas
+from github_db import (
+    buscar_tasks, inserir_task, atualizar_task,
+    deletar_task,  # mantido (fallback)
+    deletar_tasks_bulk,  # ✅ novo (cole no github_db.py conforme abaixo)
+    buscar_pessoas
+)
 from ui_helpers import confirmar_exclusao
 from nlp_pt import parse_quick_entry
 
@@ -25,17 +29,31 @@ PRIORITY_LABELS = {"normal": "Normal", "important": "Importante"}
 
 
 # -------------------------
-# Helpers de data/hora
+# Helpers de data/hora (tolerante a "Z")
 # -------------------------
+def _clean_iso(s: str | None) -> str | None:
+    if not s:
+        return None
+    s = str(s)
+    return s[:-1] if s.endswith("Z") else s
+
+
 def _iso_to_date(x):
     try:
-        return datetime.fromisoformat(x).date() if x else None
+        x = _clean_iso(x)
+        if not x:
+            return None
+        # aceita YYYY-MM-DD
+        if len(x) == 10:
+            return date.fromisoformat(x)
+        return datetime.fromisoformat(x).date()
     except Exception:
         return None
 
 
 def _iso_to_dt(x):
     try:
+        x = _clean_iso(x)
         return datetime.fromisoformat(x) if x else None
     except Exception:
         return None
@@ -78,9 +96,58 @@ def _progress_metrics(tasks: list[dict]):
     return total, abertas, hoje_qtd, atrasadas
 
 
-def _safe_bool_insert(result) -> bool:
-    """Compat: se inserir_task retornar bool, usa; se retornar None, assume True e deixa o reload confirmar."""
+def _safe_bool(result) -> bool:
+    """Compat: se a função retornar bool, usa; se retornar None, assume True e deixa sync confirmar."""
     return bool(result) if isinstance(result, bool) else True
+
+
+# -------------------------
+# Helpers de UX/consistência (UI otimista + rollback)
+# -------------------------
+def _prepend_local_task(payload: dict) -> int:
+    """Cria uma tarefa local temporária (id negativo) e coloca no topo."""
+    temp_id = -int(time.time() * 1000)
+    tmp = dict(payload)
+    tmp["id"] = temp_id
+    tmp.setdefault("status", "todo")
+    tmp.setdefault("priority", "normal")
+    tmp.setdefault("type", "task")
+    tmp.setdefault("tags", [])
+    st.session_state.tasks = st.session_state.get("tasks", [])
+    st.session_state.tasks = [tmp] + st.session_state.tasks
+    return temp_id
+
+
+def _rollback_local_task(temp_id: int):
+    st.session_state.tasks = [t for t in st.session_state.tasks if int(t.get("id", 0)) != int(temp_id)]
+
+
+def _apply_local_patch(task_id: int, patch: dict) -> list[dict]:
+    """Aplica patch localmente e retorna backup para rollback."""
+    backup = list(st.session_state.get("tasks", []))
+    new_list = []
+    for t in backup:
+        try:
+            tid = int(t.get("id", -999999))
+        except Exception:
+            tid = -999999
+        if tid == int(task_id):
+            tt = dict(t)
+            tt.update(patch)
+            new_list.append(tt)
+        else:
+            new_list.append(t)
+    st.session_state.tasks = new_list
+    return backup
+
+
+def _commit_patch(task_id: int, patch: dict, backup: list[dict]) -> bool:
+    ok = _safe_bool(atualizar_task(int(task_id), patch))
+    if not ok:
+        st.session_state.tasks = backup
+        st.error("Falha ao sincronizar (concorrência). Tente novamente em instantes.")
+        return False
+    return True
 
 
 # -------------------------
@@ -112,8 +179,19 @@ def render_tarefas():
     st.session_state.setdefault("_last_add_text", "")
     st.session_state.setdefault("_last_add_ts", 0.0)
 
-    # ✅ Fila de exclusões para deixar UI instantânea
+    # Sync/concorrência
+    st.session_state.setdefault("_tasks_last_sync", 0.0)
     st.session_state.setdefault("_pending_deletes", [])  # lista de ids (int)
+
+    # ✅ Sync TTL (bom para 2 dispositivos)
+    def _sync_if_old(ttl=30):
+        now = time.time()
+        last = float(st.session_state.get("_tasks_last_sync", 0.0))
+        if now - last > ttl:
+            st.session_state.tasks = buscar_tasks()
+            st.session_state["_tasks_last_sync"] = now
+
+    _sync_if_old(ttl=30)
 
     # ✅ Limpa o input antes do widget existir (evita “corrida”)
     if st.session_state.get("_clear_quick"):
@@ -121,27 +199,37 @@ def render_tarefas():
             del st.session_state["quick_in"]
         st.session_state["_clear_quick"] = False
 
-    # ========= Processa exclusões pendentes (sincronização GitHub) =========
-    # Importante: isso acontece uma vez por rerun, e a UI já “sumiu” com a tarefa antes.
+    # ========= Barra superior: sincronizar =========
+    top1, top2 = st.columns([10, 1])
+    with top2:
+        if st.button("↻", help="Sincronizar com GitHub"):
+            st.session_state.tasks = buscar_tasks()
+            st.session_state["_tasks_last_sync"] = time.time()
+            st.toast("Sincronizado.")
+            st.rerun()
+
+    # ========= Processa exclusões pendentes (BULK) =========
     if st.session_state.get("_pending_deletes"):
         pend = list(dict.fromkeys(st.session_state["_pending_deletes"]))  # unique mantendo ordem
-        st.session_state["_pending_deletes"] = []  # limpa já, para não duplicar em caso de erro
-        failures = []
+        st.session_state["_pending_deletes"] = []  # limpa já (evita duplicar)
+
         with st.spinner(f"Sincronizando exclusão ({len(pend)})..."):
-            for tid in pend:
-                ok = deletar_task(int(tid))
-                if not ok:
-                    failures.append(tid)
+            ok = _safe_bool(deletar_tasks_bulk([int(x) for x in pend]))
 
-        # Recarrega estado real do GitHub uma vez
+            # fallback: se bulk falhar, tenta individual (melhor do que perder operação)
+            if not ok:
+                failures = []
+                for tid in pend:
+                    ok2 = _safe_bool(deletar_task(int(tid)))
+                    if not ok2:
+                        failures.append(tid)
+                if failures:
+                    st.warning(f"Algumas exclusões falharam por concorrência: {failures}. Tente novamente em instantes.")
+
+        # Recarrega estado real uma vez
         st.session_state.tasks = buscar_tasks()
-
-        if failures:
-            st.warning(f"Algumas exclusões falharam por concorrência: {failures}. Tente novamente em instantes.")
-        else:
-            st.toast("🗑️ Exclusão sincronizada.")
-
-        # não dá rerun aqui; deixa o fluxo seguir e renderizar com o estado atualizado
+        st.session_state["_tasks_last_sync"] = time.time()
+        st.toast("🗑️ Exclusões sincronizadas.")
 
     tasks = st.session_state.tasks
 
@@ -160,8 +248,8 @@ def render_tarefas():
     # =========================================================
     st.markdown("### ➕ Adicionar")
 
-    def _add_quick_from_text(txt: str):
-        """Entrada inteligente robusta: debounce + busy + rerun só no sucesso."""
+    def _add_from_text(txt: str):
+        """Entrada inteligente robusta: debounce + busy + UI otimista + sync."""
         txt = (txt or "").strip()
         if not txt:
             return
@@ -173,6 +261,7 @@ def render_tarefas():
             return
 
         st.session_state["_busy_add"] = True
+        temp_id = None
         try:
             payload = parse_quick_entry(txt)
             payload.update({
@@ -180,26 +269,37 @@ def render_tarefas():
                 "created_at": datetime.utcnow().isoformat() + "Z",
                 "updated_at": None
             })
-            ok = _safe_bool_insert(inserir_task(payload))
 
-            # Recarrega para confirmar
-            st.session_state.tasks = buscar_tasks()
+            # ✅ UI instantânea
+            temp_id = _prepend_local_task(payload)
+            st.toast(f"✅ Adicionando: {payload.get('title', 'Tarefa')}")
 
+            # ✅ Persistência
+            ok = _safe_bool(inserir_task(payload))
             if ok:
+                # sincroniza para obter ID real
+                st.session_state.tasks = buscar_tasks()
+                st.session_state["_tasks_last_sync"] = time.time()
+
                 st.session_state["_last_add_text"] = txt
                 st.session_state["_last_add_ts"] = now_ts
                 st.session_state["_clear_quick"] = True
-                st.toast(f"✅ Adicionado: {payload.get('title')}")
+                st.toast("✅ Salvo.")
                 st.rerun()
             else:
+                if temp_id is not None:
+                    _rollback_local_task(temp_id)
                 st.error("Não consegui salvar agora (concorrência/sincronização). Tente novamente em 2s.")
+
         except Exception as e:
+            if temp_id is not None:
+                _rollback_local_task(temp_id)
             st.error(f"Erro no salvamento: {e}")
         finally:
             st.session_state["_busy_add"] = False
 
     def _on_enter_add():
-        _add_quick_from_text(st.session_state.get("quick_in"))
+        _add_from_text(st.session_state.get("quick_in"))
 
     c1, c2 = st.columns([4, 1])
     with c1:
@@ -212,13 +312,12 @@ def render_tarefas():
         )
     with c2:
         if st.button("Adicionar", use_container_width=True):
-            _add_quick_from_text(st.session_state.get("quick_in"))
+            _add_from_text(st.session_state.get("quick_in"))
 
-    # ---- Form completo opcional (sem perder suas funções antigas) ----
+    # ---- Form completo opcional ----
     with st.expander("➕ Adicionar com detalhes (opcional)"):
         with st.form("form_task_full", clear_on_submit=True):
             fc1, fc2, fc3 = st.columns([2, 1, 1])
-
             title = fc1.text_input("Título", placeholder="O que precisa ser feito?")
             tipo = fc2.selectbox("Tipo", options=["Tarefa", "Evento"], index=0)
             assignee = fc3.selectbox("Responsável", options=PESSOAS, index=0)
@@ -228,10 +327,20 @@ def render_tarefas():
             dc1, dc2, dc3 = st.columns([1, 1, 1])
             dsel = dc1.date_input("Data", value=None)
             tsel = dc2.time_input("Hora (opcional)", value=None)
-            status = dc3.selectbox("Status", options=STATUS_OPCOES, format_func=lambda x: STATUS_LABELS.get(x, x), index=0)
+            status = dc3.selectbox(
+                "Status",
+                options=STATUS_OPCOES,
+                format_func=lambda x: STATUS_LABELS.get(x, x),
+                index=0
+            )
 
             pc1, pc2 = st.columns([1, 1])
-            priority = pc1.selectbox("Prioridade", options=PRIORITY_OPCOES, format_func=lambda x: PRIORITY_LABELS.get(x, x), index=0)
+            priority = pc1.selectbox(
+                "Prioridade",
+                options=PRIORITY_OPCOES,
+                format_func=lambda x: PRIORITY_LABELS.get(x, x),
+                index=0
+            )
             tags_txt = pc2.text_input("Tags (opcional)", placeholder="#trabalho #casa")
 
             submitted = st.form_submit_button("Salvar")
@@ -255,7 +364,6 @@ def render_tarefas():
                         "updated_at": None
                     }
 
-                    # Decide tarefa vs evento + data/hora
                     if tipo == "Evento" and dsel and tsel:
                         payload["type"] = "event"
                         payload["start_at"] = datetime.combine(dsel, tsel).isoformat()
@@ -265,18 +373,22 @@ def render_tarefas():
                         payload["due_at"] = dsel.isoformat() if dsel else None
                         payload["start_at"] = None
 
-                    ok = _safe_bool_insert(inserir_task(payload))
-                    st.session_state.tasks = buscar_tasks()
+                    # UI otimista
+                    temp_id = _prepend_local_task(payload)
+                    ok = _safe_bool(inserir_task(payload))
                     if ok:
+                        st.session_state.tasks = buscar_tasks()
+                        st.session_state["_tasks_last_sync"] = time.time()
                         st.toast("✅ Salvo!")
                         st.rerun()
                     else:
+                        _rollback_local_task(temp_id)
                         st.error("Falha ao gravar no GitHub. Tente novamente.")
 
     st.divider()
 
     # =================================
-    # 2) Filtros (como no modelo antigo)
+    # 2) Filtros
     # =================================
     f1, f2, f3 = st.columns([1.5, 1.5, 1])
     status_sel = f1.multiselect(
@@ -290,7 +402,8 @@ def render_tarefas():
     janela = f3.selectbox("Janela", options=["Todos", "Hoje", "Próximos 7 dias", "Próximos 30 dias"], index=0, key="flt_janela")
 
     def _apply_filters(items: list[dict]):
-        out = items
+        out = list(items)
+
         if status_sel:
             out = [t for t in out if t.get("status") in status_sel]
         if resp_sel != "Todos":
@@ -311,7 +424,6 @@ def render_tarefas():
             dd = _task_day(t) or date.max
             pr = 0 if t.get("priority") == "important" else 1
             ttl = t.get("title") or ""
-            # eventos por hora
             if t.get("type") == "event":
                 dt = _iso_to_dt(t.get("start_at")) or datetime.max
                 return (dd, dt.time(), pr, ttl.lower())
@@ -333,126 +445,159 @@ def render_tarefas():
     def _queue_delete(task_id: int):
         """Remove do cache AGORA e coloca em fila para sincronizar com GitHub depois."""
         task_id = int(task_id)
-        # some instantaneamente
         st.session_state.tasks = [
             x for x in st.session_state.tasks
             if int(x.get("id", -1)) != task_id
         ]
-        # fila de sync
         if task_id not in st.session_state["_pending_deletes"]:
             st.session_state["_pending_deletes"].append(task_id)
 
     def _render_quick_actions(t: dict, key_ns: str):
-        """Ações rápidas no cartão (com key namespace)."""
+        """Ações rápidas no cartão (sem GET por clique)."""
+        tid = int(t.get("id", 0))
+
+        # Se ainda estiver com id temporário, bloqueia ações (evita inconsistência)
+        if tid < 0:
+            st.caption("⏳ Sincronizando…")
+            return
+
         c1, c2, c3, c4, c5 = st.columns([1, 1, 1, 1, 1])
 
         # Finalizar
         with c1:
             if t.get("status") != "done":
-                if st.button("✔ Finalizar", key=f"{key_ns}_done_{t['id']}"):
-                    atualizar_task(int(t["id"]), {"status": "done", "completed_at": datetime.utcnow().isoformat() + "Z"})
-                    st.session_state.tasks = buscar_tasks()
+                if st.button("✔ Finalizar", key=f"{key_ns}_done_{tid}"):
+                    patch = {"status": "done", "completed_at": datetime.utcnow().isoformat() + "Z"}
+                    backup = _apply_local_patch(tid, patch)
+                    ok = _commit_patch(tid, patch, backup)
+                    if ok:
+                        st.toast("Concluída.")
                     st.rerun()
 
-        # Voltar para todo / doing
+        # Voltar para todo
         with c2:
-            if st.button("⏳ Não Iniciado", key=f"{key_ns}_todo_{t['id']}"):
-                atualizar_task(int(t["id"]), {"status": "todo"})
-                st.session_state.tasks = buscar_tasks()
+            if st.button("⏳ Não Iniciado", key=f"{key_ns}_todo_{tid}"):
+                patch = {"status": "todo", "updated_at": datetime.utcnow().isoformat() + "Z"}
+                backup = _apply_local_patch(tid, patch)
+                _commit_patch(tid, patch, backup)
                 st.rerun()
 
+        # Em progresso
         with c3:
-            if st.button("🔄 Em Progresso", key=f"{key_ns}_doing_{t['id']}"):
-                atualizar_task(int(t["id"]), {"status": "doing"})
-                st.session_state.tasks = buscar_tasks()
+            if st.button("🔄 Em Progresso", key=f"{key_ns}_doing_{tid}"):
+                patch = {"status": "doing", "updated_at": datetime.utcnow().isoformat() + "Z"}
+                backup = _apply_local_patch(tid, patch)
+                _commit_patch(tid, patch, backup)
                 st.rerun()
 
         # Importante
         with c4:
             imp = (t.get("priority") == "important")
             lab = "⭐ Importante" if imp else "⭐ Marcar"
-            if st.button(lab, key=f"{key_ns}_imp_{t['id']}"):
-                atualizar_task(int(t["id"]), {"priority": ("normal" if imp else "important")})
-                st.session_state.tasks = buscar_tasks()
+            if st.button(lab, key=f"{key_ns}_imp_{tid}"):
+                patch = {"priority": ("normal" if imp else "important"), "updated_at": datetime.utcnow().isoformat() + "Z"}
+                backup = _apply_local_patch(tid, patch)
+                _commit_patch(tid, patch, backup)
                 st.rerun()
 
-        # Excluir (agora fica instantâneo)
+        # Excluir (com confirmação) — some instantaneamente, sync depois
         with c5:
             st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
-            if st.button("Excluir", key=f"{key_ns}_del_{t['id']}"):
+            if st.button("Excluir", key=f"{key_ns}_del_{tid}"):
                 confirmar_exclusao(
-                    f"dlg_{key_ns}_{t['id']}",
+                    f"dlg_{key_ns}_{tid}",
                     "Confirmar exclusão",
-                    lambda: _queue_delete(int(t["id"]))
+                    lambda: _queue_delete(tid)
                 )
             st.markdown("</div>", unsafe_allow_html=True)
 
         # Reagendar rápido (sem modais)
         r1, r2, r3 = st.columns([1, 1, 1])
+
         with r1:
-            if st.button("Amanhã", key=f"{key_ns}_tmw_{t['id']}"):
+            if st.button("Amanhã", key=f"{key_ns}_tmw_{tid}"):
                 if t.get("type") == "event":
                     s = _iso_to_dt(t.get("start_at")) or datetime.now()
                     ndt = datetime.combine(date.today() + timedelta(days=1), s.time())
-                    atualizar_task(int(t["id"]), {"start_at": ndt.isoformat()})
+                    patch = {"start_at": ndt.isoformat(), "updated_at": datetime.utcnow().isoformat() + "Z"}
                 else:
-                    atualizar_task(int(t["id"]), {"due_at": (date.today() + timedelta(days=1)).isoformat()})
-                st.session_state.tasks = buscar_tasks()
+                    patch = {"due_at": (date.today() + timedelta(days=1)).isoformat(), "updated_at": datetime.utcnow().isoformat() + "Z"}
+                backup = _apply_local_patch(tid, patch)
+                _commit_patch(tid, patch, backup)
                 st.rerun()
 
         with r2:
-            if st.button("+1d", key=f"{key_ns}_p1_{t['id']}"):
+            if st.button("+1d", key=f"{key_ns}_p1_{tid}"):
                 if t.get("type") == "event":
                     s = _iso_to_dt(t.get("start_at")) or datetime.now()
-                    atualizar_task(int(t["id"]), {"start_at": (s + timedelta(days=1)).isoformat()})
+                    patch = {"start_at": (s + timedelta(days=1)).isoformat(), "updated_at": datetime.utcnow().isoformat() + "Z"}
                 else:
                     d = _iso_to_date(t.get("due_at")) or date.today()
-                    atualizar_task(int(t["id"]), {"due_at": (d + timedelta(days=1)).isoformat()})
-                st.session_state.tasks = buscar_tasks()
+                    patch = {"due_at": (d + timedelta(days=1)).isoformat(), "updated_at": datetime.utcnow().isoformat() + "Z"}
+                backup = _apply_local_patch(tid, patch)
+                _commit_patch(tid, patch, backup)
                 st.rerun()
 
         with r3:
-            if st.button("Sem data", key=f"{key_ns}_nodate_{t['id']}"):
+            if st.button("Sem data", key=f"{key_ns}_nodate_{tid}"):
                 if t.get("type") == "event":
-                    atualizar_task(int(t["id"]), {"start_at": None, "type": "task"})
+                    patch = {"start_at": None, "type": "task", "due_at": None, "updated_at": datetime.utcnow().isoformat() + "Z"}
                 else:
-                    atualizar_task(int(t["id"]), {"due_at": None})
-                st.session_state.tasks = buscar_tasks()
+                    patch = {"due_at": None, "updated_at": datetime.utcnow().isoformat() + "Z"}
+                backup = _apply_local_patch(tid, patch)
+                _commit_patch(tid, patch, backup)
                 st.rerun()
 
     def _render_editor(t: dict, key_ns: str):
-        """Editor completo (sem perder funções)."""
+        """Editor completo."""
+        tid = int(t.get("id", 0))
+        if tid < 0:
+            return  # não edita enquanto não sincroniza
+
         with st.expander("Editar"):
             ec1, ec2, ec3 = st.columns([2, 1, 1])
-            nt = ec1.text_input("Título", value=t.get("title", ""), key=f"{key_ns}_et_{t['id']}")
-            nass = ec2.selectbox("Responsável", options=PESSOAS,
-                                 index=PESSOAS.index(t.get("assignee", "Ambos")) if t.get("assignee", "Ambos") in PESSOAS else 0,
-                                 key=f"{key_ns}_ea_{t['id']}")
-            nstatus = ec3.selectbox("Status", options=STATUS_OPCOES,
-                                    format_func=lambda x: STATUS_LABELS.get(x, x),
-                                    index=STATUS_OPCOES.index(t.get("status", "todo")) if t.get("status", "todo") in STATUS_OPCOES else 0,
-                                    key=f"{key_ns}_es_{t['id']}")
+            nt = ec1.text_input("Título", value=t.get("title", ""), key=f"{key_ns}_et_{tid}")
+            nass = ec2.selectbox(
+                "Responsável",
+                options=PESSOAS,
+                index=PESSOAS.index(t.get("assignee", "Ambos")) if t.get("assignee", "Ambos") in PESSOAS else 0,
+                key=f"{key_ns}_ea_{tid}"
+            )
+            nstatus = ec3.selectbox(
+                "Status",
+                options=STATUS_OPCOES,
+                format_func=lambda x: STATUS_LABELS.get(x, x),
+                index=STATUS_OPCOES.index(t.get("status", "todo")) if t.get("status", "todo") in STATUS_OPCOES else 0,
+                key=f"{key_ns}_es_{tid}"
+            )
 
-            nd = st.text_area("Detalhes", value=t.get("description", "") or "", height=90, key=f"{key_ns}_ed_{t['id']}")
+            nd = st.text_area("Detalhes", value=t.get("description", "") or "", height=90, key=f"{key_ns}_ed_{tid}")
 
             dc1, dc2, dc3 = st.columns([1, 1, 1])
             tipo = "Evento" if t.get("type") == "event" else "Tarefa"
-            ntipo = dc1.selectbox("Tipo", options=["Tarefa", "Evento"], index=0 if tipo == "Tarefa" else 1, key=f"{key_ns}_tp_{t['id']}")
+            ntipo = dc1.selectbox("Tipo", options=["Tarefa", "Evento"], index=0 if tipo == "Tarefa" else 1, key=f"{key_ns}_tp_{tid}")
 
             cur_date = _task_day(t)
             cur_dt = _iso_to_dt(t.get("start_at")) if t.get("type") == "event" else None
-            ndt = dc2.date_input("Data", value=cur_date, key=f"{key_ns}_d_{t['id']}")
-            nth = dc3.time_input("Hora (se evento)", value=(cur_dt.time() if cur_dt else None), key=f"{key_ns}_h_{t['id']}")
+            ndt = dc2.date_input("Data", value=cur_date, key=f"{key_ns}_d_{tid}")
+            nth = dc3.time_input("Hora (se evento)", value=(cur_dt.time() if cur_dt else None), key=f"{key_ns}_h_{tid}")
 
             pc1, pc2 = st.columns([1, 1])
-            nprio = pc1.selectbox("Prioridade", options=PRIORITY_OPCOES,
-                                  format_func=lambda x: PRIORITY_LABELS.get(x, x),
-                                  index=PRIORITY_OPCOES.index(t.get("priority", "normal")) if t.get("priority", "normal") in PRIORITY_OPCOES else 0,
-                                  key=f"{key_ns}_pr_{t['id']}")
-            ntags = pc2.text_input("Tags", value=" ".join([f"#{x}" for x in (t.get("tags") or [])]),
-                                   placeholder="#trabalho #casa", key=f"{key_ns}_tg_{t['id']}")
+            nprio = pc1.selectbox(
+                "Prioridade",
+                options=PRIORITY_OPCOES,
+                format_func=lambda x: PRIORITY_LABELS.get(x, x),
+                index=PRIORITY_OPCOES.index(t.get("priority", "normal")) if t.get("priority", "normal") in PRIORITY_OPCOES else 0,
+                key=f"{key_ns}_pr_{tid}"
+            )
+            ntags = pc2.text_input(
+                "Tags",
+                value=" ".join([f"#{x}" for x in (t.get("tags") or [])]),
+                placeholder="#trabalho #casa",
+                key=f"{key_ns}_tg_{tid}"
+            )
 
-            if st.button("Salvar alterações", key=f"{key_ns}_save_{t['id']}"):
+            if st.button("Salvar alterações", key=f"{key_ns}_save_{tid}"):
                 tags = []
                 for part in (ntags or "").split():
                     if part.startswith("#") and len(part) > 1:
@@ -482,9 +627,10 @@ def render_tarefas():
                     patch["start_at"] = None
                     patch["due_at"] = ndt.isoformat() if ndt else None
 
-                atualizar_task(int(t["id"]), patch)
-                st.toast("✅ Atualizado!")
-                st.session_state.tasks = buscar_tasks()
+                backup = _apply_local_patch(tid, patch)
+                ok = _commit_patch(tid, patch, backup)
+                if ok:
+                    st.toast("✅ Atualizado!")
                 st.rerun()
 
     def _render_card(t: dict, key_ns: str):
@@ -534,15 +680,18 @@ def render_tarefas():
         for t in items:
             _render_card(t, key_ns=f"{key_ns_prefix}_{t.get('id')}")
 
+    # --------------------------
+    # Abas
+    # --------------------------
     with tab_hoje:
-        hoje_items = [t for t in tasks if t.get("status") != "done" and _task_day(t) == date.today()]
+        hoje_items = [t for t in st.session_state.tasks if t.get("status") != "done" and _task_day(t) == date.today()]
         hoje_items = _apply_filters(hoje_items)
         _render_list(hoje_items, "hoje")
 
     with tab_prox:
         horizon = date.today() + timedelta(days=14)
         prox_items = []
-        for t in tasks:
+        for t in st.session_state.tasks:
             if t.get("status") == "done":
                 continue
             d = _task_day(t)
@@ -552,11 +701,14 @@ def render_tarefas():
         _render_list(prox_items, "prox")
 
     with tab_done:
-        done_items = [t for t in tasks if t.get("status") == "done"]
+        done_items = [t for t in st.session_state.tasks if t.get("status") == "done"]
         done_items = _apply_filters(done_items)
-        done_items.sort(key=lambda x: x.get("completed_at") or x.get("updated_at") or x.get("created_at") or "", reverse=True)
+        done_items.sort(
+            key=lambda x: x.get("completed_at") or x.get("updated_at") or x.get("created_at") or "",
+            reverse=True
+        )
         _render_list(done_items[:80], "done")
 
     with tab_all:
-        all_items = _apply_filters(list(tasks))
+        all_items = _apply_filters(list(st.session_state.tasks))
         _render_list(all_items, "all")
