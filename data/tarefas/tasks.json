@@ -91,5 +91,21 @@
     "id": 10,
     "recurrence": null,
     "reminders": []
+  },
+  {
+    "title": "Retaguarda - Gerar a fatura das guias fora do prazo",
+    "description": "Gerar a fatura das guias fora do prazo e entregar para o Cleberson",
+    "assignee": "Guilherme",
+    "status": "todo",
+    "priority": "normal",
+    "tags": [],
+    "created_at": "2026-02-02T17:50:18.390768Z",
+    "updated_at": null,
+    "type": "task",
+    "start_at": null,
+    "due_at": "2026-02-03",
+    "id": 11,
+    "recurrence": null,
+    "reminders": []
   }
 ]
