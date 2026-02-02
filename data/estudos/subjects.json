@@ -1,1 +1,7 @@
-[]
+[
+  {
+    "id": 1,
+    "name": "Curso de Python",
+    "order": 1
+  }
+]
