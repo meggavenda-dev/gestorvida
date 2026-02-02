@@ -8,8 +8,8 @@ from datetime import datetime, date, timedelta, time as dtime
 
 from github_db import (
     buscar_tasks, inserir_task, atualizar_task,
-    deletar_task,  # mantido (fallback)
-    deletar_tasks_bulk,  # ✅ novo (cole no github_db.py conforme abaixo)
+    deletar_task,            # fallback
+    deletar_tasks_bulk,      # ✅ novo (precisa existir no github_db.py)
     buscar_pessoas
 )
 from ui_helpers import confirmar_exclusao
@@ -200,7 +200,7 @@ def render_tarefas():
         st.session_state["_clear_quick"] = False
 
     # ========= Barra superior: sincronizar =========
-    top1, top2 = st.columns([10, 1])
+    _, top2 = st.columns([10, 1])
     with top2:
         if st.button("↻", help="Sincronizar com GitHub"):
             st.session_state.tasks = buscar_tasks()
@@ -211,12 +211,12 @@ def render_tarefas():
     # ========= Processa exclusões pendentes (BULK) =========
     if st.session_state.get("_pending_deletes"):
         pend = list(dict.fromkeys(st.session_state["_pending_deletes"]))  # unique mantendo ordem
-        st.session_state["_pending_deletes"] = []  # limpa já (evita duplicar)
+        st.session_state["_pending_deletes"] = []  # limpa já
 
         with st.spinner(f"Sincronizando exclusão ({len(pend)})..."):
             ok = _safe_bool(deletar_tasks_bulk([int(x) for x in pend]))
 
-            # fallback: se bulk falhar, tenta individual (melhor do que perder operação)
+            # fallback: se bulk falhar, tenta individual
             if not ok:
                 failures = []
                 for tid in pend:
@@ -249,7 +249,7 @@ def render_tarefas():
     st.markdown("### ➕ Adicionar")
 
     def _add_from_text(txt: str):
-        """Entrada inteligente robusta: debounce + busy + UI otimista + sync."""
+        """Entrada inteligente: debounce + busy + UI otimista + sync. (Só pelo botão!)"""
         txt = (txt or "").strip()
         if not txt:
             return
@@ -277,7 +277,6 @@ def render_tarefas():
             # ✅ Persistência
             ok = _safe_bool(inserir_task(payload))
             if ok:
-                # sincroniza para obter ID real
                 st.session_state.tasks = buscar_tasks()
                 st.session_state["_tasks_last_sync"] = time.time()
 
@@ -298,17 +297,14 @@ def render_tarefas():
         finally:
             st.session_state["_busy_add"] = False
 
-    def _on_enter_add():
-        _add_from_text(st.session_state.get("quick_in"))
-
     c1, c2 = st.columns([4, 1])
     with c1:
+        # ✅ AJUSTE PRINCIPAL: sem on_change (não adiciona ao digitar)
         st.text_input(
             "Entrada rápida",
             placeholder="Ex.: Reunião amanhã 15h / Pagar boleto 12/02 / Comprar leite #casa",
             label_visibility="collapsed",
-            key="quick_in",
-            on_change=_on_enter_add
+            key="quick_in"
         )
     with c2:
         if st.button("Adicionar", use_container_width=True):
@@ -456,7 +452,7 @@ def render_tarefas():
         """Ações rápidas no cartão (sem GET por clique)."""
         tid = int(t.get("id", 0))
 
-        # Se ainda estiver com id temporário, bloqueia ações (evita inconsistência)
+        # Se ainda estiver com id temporário, bloqueia ações
         if tid < 0:
             st.caption("⏳ Sincronizando…")
             return
@@ -469,9 +465,7 @@ def render_tarefas():
                 if st.button("✔ Finalizar", key=f"{key_ns}_done_{tid}"):
                     patch = {"status": "done", "completed_at": datetime.utcnow().isoformat() + "Z"}
                     backup = _apply_local_patch(tid, patch)
-                    ok = _commit_patch(tid, patch, backup)
-                    if ok:
-                        st.toast("Concluída.")
+                    _commit_patch(tid, patch, backup)
                     st.rerun()
 
         # Voltar para todo
@@ -500,7 +494,7 @@ def render_tarefas():
                 _commit_patch(tid, patch, backup)
                 st.rerun()
 
-        # Excluir (com confirmação) — some instantaneamente, sync depois
+        # Excluir (com confirmação)
         with c5:
             st.markdown('<div class="btn-danger">', unsafe_allow_html=True)
             if st.button("Excluir", key=f"{key_ns}_del_{tid}"):
@@ -511,7 +505,7 @@ def render_tarefas():
                 )
             st.markdown("</div>", unsafe_allow_html=True)
 
-        # Reagendar rápido (sem modais)
+        # Reagendar rápido
         r1, r2, r3 = st.columns([1, 1, 1])
 
         with r1:
@@ -552,7 +546,7 @@ def render_tarefas():
         """Editor completo."""
         tid = int(t.get("id", 0))
         if tid < 0:
-            return  # não edita enquanto não sincroniza
+            return
 
         with st.expander("Editar"):
             ec1, ec2, ec3 = st.columns([2, 1, 1])
@@ -628,9 +622,8 @@ def render_tarefas():
                     patch["due_at"] = ndt.isoformat() if ndt else None
 
                 backup = _apply_local_patch(tid, patch)
-                ok = _commit_patch(tid, patch, backup)
-                if ok:
-                    st.toast("✅ Atualizado!")
+                _commit_patch(tid, patch, backup)
+                st.toast("✅ Atualizado!")
                 st.rerun()
 
     def _render_card(t: dict, key_ns: str):
