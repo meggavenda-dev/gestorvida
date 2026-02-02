@@ -75,5 +75,21 @@
     "updated_at": "2026-01-30T22:22:58.136843Z",
     "id": 9,
     "reminders": []
+  },
+  {
+    "title": "teste",
+    "description": "",
+    "assignee": "Guilherme",
+    "status": "todo",
+    "priority": "normal",
+    "tags": [],
+    "created_at": "2026-02-02T13:44:02.156474Z",
+    "updated_at": null,
+    "type": "task",
+    "start_at": null,
+    "due_at": "2026-02-02",
+    "id": 10,
+    "recurrence": null,
+    "reminders": []
   }
 ]
