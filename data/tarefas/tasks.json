@@ -75,5 +75,21 @@
     "updated_at": "2026-01-30T22:22:58.136843Z",
     "id": 9,
     "reminders": []
+  },
+  {
+    "title": "Finalizar planilha dos Queimados e mandar no grupo",
+    "description": "",
+    "assignee": "Guilherme",
+    "status": "doing",
+    "priority": "normal",
+    "tags": [],
+    "created_at": "2026-02-02T17:49:32.030596Z",
+    "updated_at": null,
+    "type": "task",
+    "start_at": null,
+    "due_at": "2026-02-03",
+    "id": 10,
+    "recurrence": null,
+    "reminders": []
   }
 ]
