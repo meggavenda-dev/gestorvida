@@ -93,7 +93,6 @@ def _progress_metrics(tasks: list[dict]):
 
 
 def _safe_bool(result) -> bool:
-    # compat com funções que retornam None
     return bool(result) if isinstance(result, bool) else True
 
 
@@ -150,7 +149,7 @@ def render_tarefas():
 
     PESSOAS = st.session_state.pessoas or ["Guilherme", "Alynne", "Ambos"]
 
-    # Sync leve para 2 dispositivos (sem forçar rerun)
+    # Sync leve para 2 dispositivos
     st.session_state.setdefault("_tasks_last_sync", 0.0)
 
     def _sync_if_old(ttl=30):
@@ -183,11 +182,11 @@ def render_tarefas():
     st.divider()
 
     # =========================================================
-    # 1) ADICIONAR (sem piscar): Quick Add em FORM + Detalhado em FORM
+    # 1) ADICIONAR: Quick Add em FORM + Detalhado em FORM
     # =========================================================
     st.markdown("### ➕ Adicionar")
 
-    # ---- QUICK ADD: form com clear_on_submit => sem st.rerun manual ----
+    # ---- QUICK ADD ----
     with st.form("form_quick_add", clear_on_submit=True):
         qc1, qc2 = st.columns([4, 1])
         with qc1:
@@ -223,7 +222,7 @@ def render_tarefas():
                 except Exception as e:
                     st.error(f"Erro no salvamento: {e}")
 
-    # ---- FORM DETALHADO (corrigido): keys únicos + data/hora garantidas ----
+    # ---- FORM DETALHADO (corrigido): NÃO usa disabled controlado por checkbox dentro do form ----
     with st.expander("➕ Adicionar com detalhes (opcional)", expanded=False):
         with st.form("form_task_full", clear_on_submit=True):
             fc1, fc2, fc3 = st.columns([2, 1, 1])
@@ -241,29 +240,24 @@ def render_tarefas():
             tags_txt = dc3.text_input("Tags (opcional)", placeholder="#trabalho #casa", key="full_tags")
 
             st.markdown("**Quando?**")
-            cc1, cc2, cc3 = st.columns([1, 1.4, 1])
 
+            # ✅ IMPORTANTÍSSIMO: não desabilitar date_input com checkbox dentro do form
+            # Deixe sempre selecionável, e use checkbox só para "aplicar"
+            cc1, cc2 = st.columns([1, 2])
             use_date = cc1.checkbox("Definir data", value=False, key="full_use_date")
-            chosen_date = cc2.date_input("Data", value=date.today(), disabled=not use_date, key="full_date")
+            chosen_date = cc2.date_input("Data", value=date.today(), key="full_date")
 
-            use_time = cc3.checkbox(
-                "Definir hora",
-                value=False,
-                disabled=(tipo != "Evento" or not use_date),
-                key="full_use_time"
-            )
-            chosen_time = st.time_input(
-                "Hora",
-                value=dtime(9, 0),
-                disabled=(tipo != "Evento" or not use_date or not use_time),
-                key="full_time"
-            )
+            # Hora (só faz sentido para Evento). Também não desabilitamos (para não travar UI no form)
+            tc1, tc2 = st.columns([1, 2])
+            use_time = tc1.checkbox("Definir hora (evento)", value=False, key="full_use_time")
+            chosen_time = tc2.time_input("Hora", value=dtime(9, 0), key="full_time")
 
             submitted_full = st.form_submit_button("Salvar", use_container_width=True)
             if submitted_full:
                 if not title.strip():
                     st.error("Informe o título.")
                 else:
+                    # tags
                     tags = []
                     for part in (tags_txt or "").split():
                         if part.startswith("#") and len(part) > 1:
@@ -280,7 +274,6 @@ def render_tarefas():
                         "updated_at": None
                     }
 
-                    # ✅ Montagem garantida de data/hora
                     if tipo == "Evento":
                         payload["type"] = "event"
                         payload["due_at"] = None
@@ -352,11 +345,10 @@ def render_tarefas():
     st.divider()
     tab_hoje, tab_prox, tab_done, tab_all = st.tabs(["Hoje", "Próximos", "Concluídos", "Todas (filtros)"])
 
-    # ========= delete imediato pós-confirmação (mantém confirmação) =========
+    # ========= delete imediato pós-confirmação =========
     def _delete_now(task_id: int):
         task_id = int(task_id)
 
-        # remove local primeiro
         st.session_state.tasks = [t for t in st.session_state.tasks if int(t.get("id", -1)) != task_id]
 
         ok = _safe_bool(deletar_tasks_bulk([task_id]))
@@ -369,6 +361,9 @@ def render_tarefas():
         if not ok:
             st.warning("Não consegui excluir agora (concorrência). Tente novamente em instantes.")
 
+    # ==========================
+    # Render de card + ações
+    # ==========================
     def _render_quick_actions(t: dict, key_ns: str):
         tid = int(t.get("id", 0))
         c1, c2, c3, c4, c5 = st.columns([1, 1, 1, 1, 1])
@@ -415,13 +410,20 @@ def render_tarefas():
         with st.expander("Editar"):
             ec1, ec2, ec3 = st.columns([2, 1, 1])
             nt = ec1.text_input("Título", value=t.get("title", ""), key=f"{key_ns}_et_{tid}")
-            nass = ec2.selectbox("Responsável", options=PESSOAS,
-                                 index=PESSOAS.index(t.get("assignee", "Ambos")) if t.get("assignee", "Ambos") in PESSOAS else 0,
-                                 key=f"{key_ns}_ea_{tid}")
-            nstatus = ec3.selectbox("Status", options=STATUS_OPCOES,
-                                    format_func=lambda x: STATUS_LABELS.get(x, x),
-                                    index=STATUS_OPCOES.index(t.get("status", "todo")) if t.get("status", "todo") in STATUS_OPCOES else 0,
-                                    key=f"{key_ns}_es_{tid}")
+            nass = ec2.selectbox(
+                "Responsável",
+                options=PESSOAS,
+                index=PESSOAS.index(t.get("assignee", "Ambos")) if t.get("assignee", "Ambos") in PESSOAS else 0,
+                key=f"{key_ns}_ea_{tid}"
+            )
+            nstatus = ec3.selectbox(
+                "Status",
+                options=STATUS_OPCOES,
+                format_func=lambda x: STATUS_LABELS.get(x, x),
+                index=STATUS_OPCOES.index(t.get("status", "todo")) if t.get("status", "todo") in STATUS_OPCOES else 0,
+                key=f"{key_ns}_es_{tid}"
+            )
+
             nd = st.text_area("Detalhes", value=t.get("description", "") or "", height=90, key=f"{key_ns}_ed_{tid}")
 
             if st.button("Salvar alterações", key=f"{key_ns}_save_{tid}"):
