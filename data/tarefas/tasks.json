@@ -113,7 +113,7 @@
     "title": "Corrigir os Bugs do sistema Hospitalar e trabalhar na exportação dos dados",
     "description": "",
     "assignee": "Guilherme",
-    "status": "todo",
+    "status": "done",
     "priority": "normal",
     "tags": [],
     "created_at": "2026-02-02T17:51:32.546932Z",
@@ -123,6 +123,7 @@
     "due_at": "2026-02-02",
     "id": 12,
     "recurrence": null,
-    "reminders": []
+    "reminders": [],
+    "completed_at": "2026-02-04T17:02:10.558490Z"
   }
 ]
