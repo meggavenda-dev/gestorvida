@@ -81,7 +81,7 @@
     "title": "Finalizar planilha dos Queimados e mandar no grupo",
     "description": "",
     "assignee": "Guilherme",
-    "status": "doing",
+    "status": "done",
     "priority": "normal",
     "tags": [],
     "created_at": "2026-02-02T17:49:32.030596Z",
@@ -91,7 +91,8 @@
     "due_at": "2026-02-03",
     "id": 10,
     "recurrence": null,
-    "reminders": []
+    "reminders": [],
+    "completed_at": "2026-02-04T17:02:24.402802Z"
   },
   {
     "title": "Retaguarda - Gerar a fatura das guias fora do prazo",
