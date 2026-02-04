@@ -64,7 +64,7 @@
     "title": "Verificar os médicos e as PJ",
     "description": "",
     "assignee": "Ambos",
-    "status": "todo",
+    "status": "done",
     "priority": "normal",
     "tags": [],
     "recurrence": null,
@@ -74,7 +74,8 @@
     "created_at": "2026-01-30T20:48:15.420766Z",
     "updated_at": "2026-01-30T22:22:58.136843Z",
     "id": 9,
-    "reminders": []
+    "reminders": [],
+    "completed_at": "2026-02-04T17:01:58.413139Z"
   },
   {
     "title": "Finalizar planilha dos Queimados e mandar no grupo",
